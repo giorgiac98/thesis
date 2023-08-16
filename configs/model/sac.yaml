@@ -1,0 +1,19 @@
+policy: sac
+policy_spec:
+  num_qvalue_nets: 2
+  gamma: 0.99
+  delay_actor: False,
+  delay_qvalue: True,
+actor_net_spec:
+  depth: 2
+  num_cells: 16
+  activation: relu
+value_net_spec:
+  depth: 2
+  num_cells: 32
+  activation: relu
+other_spec:
+  init_random_frames: 1700
+  target_update_polyak: 0.01
+  sampler:
+    _target_: torchrl.data.replay_buffers.samplers.RandomSampler

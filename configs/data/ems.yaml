@@ -1,0 +1,8 @@
+problem: ems
+other:
+  predictions_filepath: ${hydra:runtime.cwd}/envs/ems_data/Dataset10k.csv
+  prices_filepath: ${hydra:runtime.cwd}/envs/ems_data/gmePrices.npy
+  shifts_filepath: ${hydra:runtime.cwd}/envs/ems_data/optShift.npy
+  noise_std_dev: 0.01
+  instances:
+    - 2732
