@@ -1,0 +1,105 @@
+{
+    "lr": {
+        "desc": null,
+        "value": 0.01
+    },
+    "data": {
+        "desc": null,
+        "value": {
+            "other": {
+                "instances": [
+                    2732
+                ],
+                "noise_std_dev": 0.01,
+                "prices_filepath": "/home/giorgia/projects/thesis/src/envs/ems_data/gmePrices.npy",
+                "shifts_filepath": "/home/giorgia/projects/thesis/src/envs/ems_data/optShift.npy",
+                "predictions_filepath": "/home/giorgia/projects/thesis/src/envs/ems_data/Dataset10k.csv"
+            },
+            "problem": "ems"
+        }
+    },
+    "model": {
+        "desc": null,
+        "value": {
+            "policy": "sac",
+            "other_spec": {
+                "sampler": {
+                    "_target_": "torchrl.data.replay_buffers.samplers.RandomSampler"
+                },
+                "init_random_frames": 1700,
+                "target_update_polyak": 0.01
+            },
+            "policy_spec": {
+                "gamma": 0.99,
+                "delay_actor": "False,",
+                "delay_qvalue": "True,",
+                "num_qvalue_nets": 2
+            },
+            "actor_net_spec": {
+                "depth": 2,
+                "num_cells": 16,
+                "activation": "relu"
+            },
+            "value_net_spec": {
+                "depth": 2,
+                "num_cells": 32,
+                "activation": "relu"
+            }
+        }
+    },
+    "device": {
+        "desc": null,
+        "value": {
+            "device": "cpu",
+            "_target_": "torch.device"
+        }
+    },
+    "end_lr": {
+        "desc": null,
+        "value": 0.0005
+    },
+    "num_envs": {
+        "desc": null,
+        "value": 8
+    },
+    "wandb_log": {
+        "desc": null,
+        "value": true
+    },
+    "batch_size": {
+        "desc": null,
+        "value": 32
+    },
+    "train_iter": {
+        "desc": null,
+        "value": 950
+    },
+    "buffer_size": {
+        "desc": null,
+        "value": 100000
+    },
+    "schedule_lr": {
+        "desc": null,
+        "value": true
+    },
+    "eval_interval": {
+        "desc": null,
+        "value": 10
+    },
+    "max_grad_norm": {
+        "desc": null,
+        "value": 0.5
+    },
+    "update_rounds": {
+        "desc": null,
+        "value": 6
+    },
+    "frames_per_batch": {
+        "desc": null,
+        "value": 192
+    },
+    "eval_rollout_steps": {
+        "desc": null,
+        "value": 1000
+    }
+}

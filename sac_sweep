@@ -9,11 +9,11 @@ metric:
   name: eval/episode_reward
   goal: maximize
 parameters:
-  collector.collector.frames_per_batch:
+  frames_per_batch:
     distribution: int_uniform
     max: 9600
     min: 630
-  collector.num_envs:
+  num_envs:
     distribution: categorical
     values:
       - 2
@@ -55,6 +55,9 @@ parameters:
       - 4
       - 8
       - 12
+      - 16
+      - 20
+      - 24
   batch_size:
     distribution: categorical
     values:
@@ -71,4 +74,9 @@ parameters:
       - 0.0025
       - 0.001
       - 0.0005
+  schedule_lr:
+    distribution: categorical
+    values:
+      - "True"
+      - "False"
 

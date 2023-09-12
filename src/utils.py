@@ -6,15 +6,18 @@ import torch
 from tensordict.nn import NormalParamExtractor, TensorDictModule, InteractionType
 from torch import nn
 from torchrl.envs import TransformedEnv, Compose, ObservationNorm, StepCounter, check_env_specs, set_exploration_type, \
-    ExplorationType, RewardSum, RewardScaling
+    ExplorationType, RewardSum, RewardScaling, default_info_dict_reader
 from torchrl.envs.libs.gym import GymWrapper
-from torchrl.modules import MLP, ProbabilisticActor, TanhNormal, IndependentNormal, ValueOperator, NormalParamWrapper, SafeModule
+from torchrl.modules import MLP, ProbabilisticActor, TanhNormal, IndependentNormal, ValueOperator, NormalParamWrapper, \
+    SafeModule
 from torchrl.objectives import ClipPPOLoss, SACLoss, SoftUpdate
 from torchrl.objectives.value import GAE
 from torchrl.record.loggers.wandb import WandbLogger
 from tqdm import tqdm
-
+import wandb
 from envs.vpp_envs import make_env
+from envs.generate_instances import MinSetCoverEnv
+import matplotlib.pyplot as plt
 
 
 class MyWandbLogger(WandbLogger):
@@ -79,42 +82,58 @@ def get_activation(act: str):
 
 
 def env_maker(problem: str,
-              other: dict,
+              params: dict,
               device: torch.device):
     assert problem in ['msc', 'ems'], f"Environment not implemented for {problem} problem"
     if problem == 'ems':
-        predictions = pd.read_csv(other['predictions_filepath'])
-        shift = np.load(other['shifts_filepath'])
-        c_grid = np.load(other['prices_filepath'])
+        predictions = pd.read_csv(params['predictions_filepath'])
+        shift = np.load(params['shifts_filepath'])
+        c_grid = np.load(params['prices_filepath'])
+        instance = params['instance']
+        info_keys = []
 
-        def make_init_env(logger=None, state_dict=None):
-            base_env, discount, max_episode_length = make_env('unify-sequential',
-                                                              predictions.iloc[[2732]],
-                                                              shift,
-                                                              c_grid,
-                                                              other['noise_std_dev'],
-                                                              logger)
-            torchrl_env = GymWrapper(base_env, device=device)
-            # torchrl_env.set_info_dict_reader()
-            e = TransformedEnv(
-                torchrl_env,
-                Compose(
-                    # normalize observations
-                    ObservationNorm(in_keys=["observation"]),
-                    StepCounter(),
-                    RewardSum(),
-                    RewardScaling(0, 0.05)
-                ),
-            )
-            if state_dict is not None:
-                e.transform[0].init_stats(num_iter=3, reduce_dim=0, cat_dim=0)
-                e.transform[0].load_state_dict(state_dict)
-            else:
-                e.transform[0].init_stats(num_iter=5000, reduce_dim=0, cat_dim=0)
-            check_env_specs(e)
-            return e
+        def create_env(logger=None):
+            base_env, _, _ = make_env(f'unify-{params["method"]}',
+                                      predictions.iloc[[instance]],
+                                      shift,
+                                      c_grid,
+                                      params['noise_std_dev'],
+                                      logger)
+            return base_env
 
-        return make_init_env
+        env_creator = create_env
+    elif problem == 'msc':
+        info_keys = []
+        env_creator = lambda logger: MinSetCoverEnv(num_prods=params['num_prods'],
+                                                    num_sets=params['num_sets'],
+                                                    instances_filepath=params['data_path'],
+                                                    seed=params['seed'])
+    else:
+        raise NotImplementedError
+
+    def make_init_env(logger=None, state_dict=None):
+        base_env = env_creator(logger)
+        torchrl_env = GymWrapper(base_env, device=device)
+        torchrl_env.set_info_dict_reader(default_info_dict_reader(info_keys))
+        e = TransformedEnv(
+            torchrl_env,
+            Compose(
+                # normalize observations
+                ObservationNorm(in_keys=["observation"]),
+                StepCounter(),
+                RewardSum(),
+                RewardScaling(0, 0.05)
+            ),
+        )
+        if state_dict is not None:
+            e.transform[0].init_stats(num_iter=3, reduce_dim=0, cat_dim=0)
+            e.transform[0].load_state_dict(state_dict)
+        else:
+            e.transform[0].init_stats(num_iter=500, reduce_dim=0, cat_dim=0)
+        check_env_specs(e)
+        return e
+
+    return make_init_env
 
 
 def prepare_networks_and_policy(policy, policy_spec, other_spec, actor_net_spec, value_net_spec, device,
@@ -122,11 +141,6 @@ def prepare_networks_and_policy(policy, policy_spec, other_spec, actor_net_spec,
                                 input_shape):
     n_action = env_action_spec.shape[-1]
     if policy == 'ppo':
-        dist_kwargs = {
-            "min": -20,  # env_action_spec.space.minimum,
-            "max": 20,  # env_action_spec.space.maximum,
-            # "tanh_loc": False,
-        }
         actor_mlp = MLP(in_features=input_shape,
                         out_features=2 * n_action,
                         device=device,
@@ -146,7 +160,6 @@ def prepare_networks_and_policy(policy, policy_spec, other_spec, actor_net_spec,
             spec=env_action_spec,
             in_keys=["loc", "scale"],
             distribution_class=IndependentNormal,
-            # distribution_kwargs=dist_kwargs,
             return_log_prob=True,
             default_interaction_type=ExplorationType.RANDOM,
         )
@@ -214,11 +227,17 @@ def training_loop(cfg, policy_module, loss_module, other_modules, optim, collect
     if logger is not None:
         logger.experiment.define_metric("eval/episode_reward", summary="max")
     logs = defaultdict(list)
+    logs['episodes'] = 0
+    logs['collected_frames'] = 0
+    logs['updates'] = 0
+    logs['best_episode_reward'] = None
+    optimal_cost = test_env.optimal_cost
     pbar = tqdm(total=collector.total_frames)
     eval_str = ""
     if cfg.model.policy == 'ppo':
         advantage_module = other_modules['advantage']
         for i, tensordict_data in enumerate(collector):
+            logs['collected_frames'] += tensordict_data.numel()
             for _ in range(cfg.update_rounds):
                 with torch.no_grad():
                     advantage_module(tensordict_data)
@@ -227,7 +246,8 @@ def training_loop(cfg, policy_module, loss_module, other_modules, optim, collect
                 for j, batch in enumerate(replay_buffer):
                     compute_loss(cfg, device, logger, loss_module, optim, batch)
 
-            logs_str = train_logs(logger, logs, optim, pbar, tensordict_data)
+            logs['updates'] += cfg.update_rounds
+            logs_str = train_logs(logger, logs, optim, pbar, tensordict_data, optimal_cost)
             if i % cfg.eval_interval == 0:
                 eval_str = evaluate_policy(cfg, logger, logs, policy_module, test_env)
             pbar.set_description(", ".join([eval_str, *logs_str]))
@@ -236,22 +256,21 @@ def training_loop(cfg, policy_module, loss_module, other_modules, optim, collect
 
     elif cfg.model.policy == 'sac':
         target_net_updater = other_modules['target_net_updater']
-        collected_frames = 0
         for i, tensordict_data in enumerate(collector):
-            collected_frames += tensordict_data.numel()
+            logs['collected_frames'] += tensordict_data.numel()
             collector.update_policy_weights_()
             data_view = tensordict_data.reshape(-1)
             replay_buffer.extend(data_view.cpu())
-            if collected_frames >= cfg.model.other_spec.init_random_frames:
+            if logs['collected_frames'] >= cfg.model.other_spec.init_random_frames:
                 for _ in range(cfg.update_rounds):
                     # sample from replay buffer
                     sampled_tensordict = replay_buffer.sample().clone()
                     compute_loss(cfg, device, logger, loss_module, optim, sampled_tensordict)
                     target_net_updater.step()
-
+                logs['updates'] += cfg.update_rounds
                 if scheduler is not None:
                     scheduler.step()
-            logs_str = train_logs(logger, logs, optim, pbar, tensordict_data)
+            logs_str = train_logs(logger, logs, optim, pbar, tensordict_data, optimal_cost)
             if i % cfg.eval_interval == 0:
                 eval_str = evaluate_policy(cfg, logger, logs, policy_module, test_env)
             pbar.set_description(", ".join([eval_str, *logs_str]))
@@ -263,28 +282,44 @@ def training_loop(cfg, policy_module, loss_module, other_modules, optim, collect
 def evaluate_policy(cfg, logger, logs, policy_module, test_env):
     with set_exploration_type(ExplorationType.MEAN), torch.no_grad():
         # execute a rollout with the trained policy
-        eval_rollout = test_env.rollout(cfg.eval_rollout_steps, policy_module)
-        episode_reward = eval_rollout[('next', 'episode_reward')][-1]
+        eval_rollouts = torch.stack([test_env.rollout(cfg.eval_rollout_steps, policy_module)
+                                     for _ in range(cfg.eval_rollouts)])
+        episode_reward = eval_rollouts[('next', 'episode_reward')][:, -1].mean().item()
+        optimality = -test_env.optimal_cost / episode_reward
         if logger is not None:
-            logger.log(prefix="eval", episode_reward=episode_reward)
-        logs["eval reward"].append(eval_rollout["next", "reward"].mean().item())
-        logs["eval reward (sum)"].append(episode_reward.item())
-        logs["eval step_count"].append(eval_rollout["step_count"].max().item())
+            logger.log(prefix="eval", episode_reward=episode_reward, optimality=optimality)
+        logs["eval reward"].append(eval_rollouts["next", "reward"].mean().item())
+        logs["eval reward (sum)"].append(episode_reward)
+        logs["eval step_count"].append(eval_rollouts["step_count"].max().item())
         eval_str = (
             f"eval cumulative reward: {logs['eval reward (sum)'][-1]: 4.4f} "
             f"(init: {logs['eval reward (sum)'][0]: 4.4f}), "
             f"eval step-count: {logs['eval step_count'][-1]}"
         )
+        if logs['best_episode_reward'] is None:
+            logs['best_episode_reward'] = episode_reward
+
+        if episode_reward > logs['best_episode_reward']:
+            logs['best_episode_reward'] = episode_reward
+            name = get_model_name(cfg)
+            dir_name = get_dir_name(cfg, logger)
+            torch.save(policy_module.state_dict(), f'{dir_name}/{name}')
+            if logger is not None:
+                wandb.save(f'{dir_name}/{name}')
         test_env.reset()  # reset the env after the eval rollout
-        del eval_rollout
+        del eval_rollouts
     return eval_str
 
 
-def train_logs(logger, logs, optim, pbar, tensordict_data):
+def train_logs(logger, logs, optim, pbar, tensordict_data, optimal_cost):
     dones = tensordict_data[('next', 'done')]
     mean_episode_reward = tensordict_data[('next', 'episode_reward')][dones].mean().item()
+    optimality = -optimal_cost / mean_episode_reward
+    logs['episodes'] += dones.sum().item()
     if logger is not None:
-        logger.log(prefix="train", mean_episode_reward=mean_episode_reward, lr=optim.param_groups[0]["lr"])
+        logger.log(prefix="train", mean_episode_reward=mean_episode_reward, optimality=optimality,
+                   lr=optim.param_groups[0]["lr"], episodes=logs['episodes'],
+                   updates=logs['updates'], collected_frames=logs['collected_frames'])
     logs["reward"].append(tensordict_data["next", "reward"].mean().item())
     pbar.update(tensordict_data.numel())
     cum_reward_str = f"average reward={logs['reward'][-1]: 4.4f} (init={logs['reward'][0]: 4.4f})"
@@ -305,3 +340,44 @@ def compute_loss(cfg, device, logger, loss_module, optim, subdata):
     optim.zero_grad()
     if logger is not None:
         logger.log(prefix="train", **loss_vals, grad_norm=clipped_norm)
+
+
+def final_evaluation(cfg, logger, policy_module, test_env, test_dir=None):
+    name = get_model_name(cfg)
+    dir_name = get_dir_name(cfg, logger) if test_dir is None else test_dir
+    policy_module.load_state_dict(torch.load(f'{dir_name}/{name}'))
+    policy_module.eval()  # might not be necessary
+    with set_exploration_type(ExplorationType.MEAN), torch.no_grad():
+        eval_rollout = test_env.rollout(100, policy_module)
+        episode_reward = eval_rollout[('next', 'episode_reward')][-1].mean().item()
+        optimality = -test_env.optimal_cost / episode_reward
+
+        optimal_solution_df = test_env.optimal_solution
+        test_solution = test_env.history
+        axes = optimal_solution_df.plot(subplots=True, fontsize=12, figsize=(10, 7))
+        plt.xlabel('Timestamp', fontsize=14)
+
+        for axis in axes:
+            axis.legend(loc=2, prop={'size': 12})
+        plt.plot()
+        if logger is not None:
+            optimal_solution_df['Timestep'] = list(range(len(optimal_solution_df)))
+            d = {hs: wandb.plot.line_series(
+                xs=optimal_solution_df['Timestep'],
+                ys=[test_solution[hs], optimal_solution_df[df]],
+                keys=["learned action", "optimal action"],
+                title=df,
+                xname="timesteps")
+                for hs, df in (('energy_bought', 'Energy bought'), ('energy_sold', 'Energy sold'),
+                               ('diesel_power', 'Diesel power consumption'), ('storage_capacity', 'Storage capacity'),
+                               ('input_storage', 'Input to storage'), ('output_storage', 'Output from storage'))}
+            logger.log(prefix='final_eval', episode_reward=episode_reward, optimality=optimality,
+                       opt_chart=plt, opt_chart_data=wandb.Table(dataframe=optimal_solution_df), **d)
+
+
+def get_dir_name(cfg, logger=None):
+    return logger.experiment.dir if logger is not None else f'outputs/{cfg.data.problem}/{cfg.model.policy}'
+
+
+def get_model_name(cfg):
+    return f"best_{cfg.model.policy}_policy.pt"

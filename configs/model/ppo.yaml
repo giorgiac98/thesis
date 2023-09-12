@@ -1,17 +1,17 @@
 policy: ppo
 policy_spec:
   clip_epsilon: 0.2
-  entropy_coef: 1e-4
+  entropy_coef: 0.
   critic_coef: 0.5
   gamma: 0.99
   loss_critic_type: smooth_l1
 actor_net_spec:
   depth: 2
-  num_cells: 32
+  num_cells: 8
   activation: relu
 value_net_spec:
   depth: 2
-  num_cells: 32
+  num_cells: 8
   activation: relu
 other_spec:
   gae_spec:

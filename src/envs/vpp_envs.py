@@ -42,7 +42,6 @@ def instances_preprocessing(instances: pd.DataFrame) -> pd.DataFrame:
     return instances
 
 
-
 class VPPEnv(Env):
     """
     Gym environment for the VPP optimization model.
@@ -96,9 +95,15 @@ class VPPEnv(Env):
         self.savepath = savepath
 
         self._create_instance_variables()
+        self._load_optimal_values()
 
     def do_log(self, do_log: bool):
         self._do_log = do_log
+
+    def _load_optimal_values(self):
+        data_dir = 'envs/ems_data/oracle'
+        self.optimal_solution = pd.read_csv(f'{data_dir}/{self.mr}_solution.csv', index_col=0)
+        self.optimal_cost = np.load(f'{data_dir}/{self.mr}_cost.npy')
 
     def _create_instance_variables(self):
         """
@@ -284,6 +289,8 @@ class SingleStepVPPEnv(VPPEnv):
         # Here we define the observation and action spaces
         self.observation_space = Box(low=0, high=np.inf, shape=(self.n * 2,), dtype=np.float32)
         self.action_space = Box(low=-np.inf, high=np.inf, shape=(self.n,), dtype=np.float32)
+        self.history = {'c_virt': [], 'energy_bought': [], 'energy_sold': [], 'diesel_power': [],
+                        'input_storage': [], 'output_storage': [], 'storage_capacity': []}
 
     def _get_observations(self) -> np.array:
         """
@@ -308,6 +315,8 @@ class SingleStepVPPEnv(VPPEnv):
         self.tot_cons_pred = None
         self.tot_cons_real = None
         self.mr = None
+        self.history = {'c_virt': [], 'energy_bought': [], 'energy_sold': [], 'diesel_power': [],
+                        'input_storage': [], 'output_storage': [], 'storage_capacity': []}
 
     def _solve(self, c_virt: np.array) -> Tuple[List[gurobipy.Model], bool]:
         """
@@ -381,9 +390,15 @@ class SingleStepVPPEnv(VPPEnv):
                 break
 
             models.append(mod)
-
+            old_cap = cap_x
             # Update the storage capacity
             cap_x = cap[i].X
+            for k, v in (
+                    ('c_virt', c_virt[i]), ('energy_bought', p_grid_out[i].X), ('energy_sold', p_grid_in[i].X),
+                    ('diesel_power', p_diesel[i].X),
+                    ('input_storage', p_storage_in[i].X), ('output_storage', p_storage_out[i].X),
+                    ('storage_capacity', old_cap)):
+                self.history[k].append(v)
 
         return models, feasible
 
@@ -649,7 +664,7 @@ class MarkovianVPPEnv(VPPEnv):
             self.log()
         return observations, reward, done, {'feasible': feasible, 'true cost': self.cumulative_cost}
 
-    def log(self,):
+    def log(self, ):
         """
         Logs training info using wandb.
         :return:
@@ -658,7 +673,7 @@ class MarkovianVPPEnv(VPPEnv):
             means = dict()
             for ax, (k, hist) in enumerate(self.history.items()):
                 means[f'avg_{k}'] = np.mean(hist)
-            self.logger.log(prefix='eval', **means)
+            self.logger.log(prefix='final_eval', **means)
 
 
 ########################################################################################################################
@@ -706,3 +721,5 @@ def make_env(method,
         raise NotImplementedError()
 
     return env, discount, max_episode_length
+
+
