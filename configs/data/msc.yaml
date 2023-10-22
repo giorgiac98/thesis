@@ -1,0 +1,7 @@
+problem: msc
+params:
+  seed: 4
+  num_prods: 5
+  num_sets: 25
+  num_instances: 1000
+  data_path: ${hydra:runtime.cwd}/envs/msc_data/${.num_prods}x${.num_sets}/linear/${.num_instances}-instances/seed-${.seed}

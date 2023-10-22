@@ -626,7 +626,7 @@ class MarkovianVPPEnv(VPPEnv):
 
         return cost
 
-    def step(self, action: np.array) -> Tuple[np.array, Union[float, int], bool, dict]:
+    def step(self, action: np.array) -> Tuple[np.array, Union[float, int], bool, bool, dict]:
         """
         This is a step performed in the environment: the virtual costs are set by the agent and then the total cost
         (the reward) is computed.
@@ -653,16 +653,16 @@ class MarkovianVPPEnv(VPPEnv):
         assert self.timestep <= self.n, f"Timestep cannot be greater than {self.n}"
         terminated = (self.timestep == self.n)
         truncated = not feasible
-        done = False
-        if self.timestep == self.n or not feasible:
-            done = True
-        elif self.timestep < self.n:
-            done = False
-        else:
-            raise Exception(f"Timestep cannot be greater than {self.n}")
-        if done and self._do_log:
+        # done = False
+        # if self.timestep == self.n or not feasible:
+        #     done = True
+        # elif self.timestep < self.n:
+        #     done = False
+        # else:
+        #     raise Exception(f"Timestep cannot be greater than {self.n}")
+        if (terminated or truncated) and self._do_log:
             self.log()
-        return observations, reward, done, {'feasible': feasible, 'true cost': self.cumulative_cost}
+        return observations, reward, terminated, truncated, {'feasible': feasible, 'true cost': self.cumulative_cost}
 
     def log(self, ):
         """
@@ -673,7 +673,7 @@ class MarkovianVPPEnv(VPPEnv):
             means = dict()
             for ax, (k, hist) in enumerate(self.history.items()):
                 means[f'avg_{k}'] = np.mean(hist)
-            self.logger.log(prefix='final_eval', **means)
+            self.logger.log(prefix='env_final_eval', **means)
 
 
 ########################################################################################################################
