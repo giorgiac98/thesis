@@ -322,20 +322,24 @@ def prepare_networks_and_policy(policy, policy_spec, other_spec, actor_net_spec,
 
 def make_optimizer(cfg, loss_module):
     if cfg.model.policy != 'td3':
-        splitted = [
-            {'params': [p for k, p in loss_module.named_parameters() if 'actor' in k], 'lr': cfg.actor_lr},
-            {'params': [p for k, p in loss_module.named_parameters() if 'critic' in k], 'lr': cfg.critic_lr},
-        ]
-        lambdas = [lambda _: cfg.schedule_factor,
-                   lambda _: cfg.schedule_factor]
-        if cfg.model.policy == 'sac':
-            splitted.append({'params': [loss_module.log_alpha], 'lr': 3.0e-4})
+        lambdas = [lambda _: cfg.schedule_factor] * 2
+        if cfg.model.policy == 'ppo':
+            splitted = [
+                {'params': [p for k, p in loss_module.named_parameters() if 'actor' in k], 'lr': cfg.actor_lr},
+                {'params': [p for k, p in loss_module.named_parameters() if 'critic' in k], 'lr': cfg.critic_lr},
+            ]
+        else:
+            splitted = [
+                {'params': list(loss_module.actor_network_params.flatten_keys().values()), 'lr': cfg.actor_lr},
+                {'params': list(loss_module.qvalue_network_params.flatten_keys().values()), 'lr': cfg.critic_lr},
+                {'params': [loss_module.log_alpha], 'lr': 3.0e-3}
+            ]
             lambdas.append(lambda _: 1.)
         optim = torch.optim.Adam(splitted)
         scheduler = torch.optim.lr_scheduler.MultiplicativeLR(optim, lr_lambda=lambdas) if cfg.schedule_lr else None
     else:
-        critic_params = list(loss_module.qvalue_network_params.flatten_keys().values())
         actor_params = list(loss_module.actor_network_params.flatten_keys().values())
+        critic_params = list(loss_module.qvalue_network_params.flatten_keys().values())
         optimizer_actor = torch.optim.Adam(actor_params, lr=cfg.actor_lr)
         optimizer_critic = torch.optim.Adam(critic_params, lr=cfg.critic_lr)
         optim = (optimizer_actor, optimizer_critic)
@@ -394,38 +398,8 @@ def training_loop(cfg, policy_module, loss_module, other_modules, optim, collect
                         compute_loss(cfg, device, logs, logger, loss_module, optim, sampled_tensordict)
                         target_net_updater.step()
                     else:  # TD3
-                        optimizer_actor, optimizer_critic = optim
-                        logs['updates'] += 1
-                        update_actor = logs['updates'] % cfg.model.other_spec.policy_delay_update == 0
-                        # Compute loss
-                        q_loss, other_q = loss_module.value_loss(sampled_tensordict)
-
-                        # Update critic
-                        optimizer_critic.zero_grad()
-                        q_loss.backward()
-                        optimizer_critic.step()
-
-                        sampled_tensordict = sampled_tensordict.set('td_error', other_q['td_error'].detach().max(0)[0])
-
-                        # Update actor
-                        if update_actor:
-                            logs['actor_updates'] += 1
-                            actor_loss, other_a = loss_module.actor_loss(sampled_tensordict)
-                            optimizer_actor.zero_grad()
-                            actor_loss.backward()
-                            optimizer_actor.step()
-
-                            # Update target params
-                            target_net_updater.step()
-                            if logger is not None:
-                                logger.log(do_log_step=False, prefix="train", loss_actor=actor_loss.item(),
-                                           actor_updates=logs['actor_updates'])
-                                logger.log(do_log_step=False, prefix="debug", **other_a)
-
-                        if logger is not None:
-                            logger.log(do_log_step=False, prefix="train", loss_critic=q_loss.item(),
-                                       updates=logs['updates'])
-                            logger.log(prefix="debug", **other_q)
+                        sampled_tensordict = compute_td3_loss(cfg, logger, logs, loss_module, optim, sampled_tensordict,
+                                                              target_net_updater)
                     # update priority
                     if cfg.prb:
                         replay_buffer.update_tensordict_priority(sampled_tensordict)
@@ -444,6 +418,39 @@ def training_loop(cfg, policy_module, loss_module, other_modules, optim, collect
 
     collector.shutdown()
     pbar.close()
+
+
+def compute_td3_loss(cfg, logger, logs, loss_module, optim, sampled_tensordict, target_net_updater):
+    optimizer_actor, optimizer_critic = optim
+    logs['updates'] += 1
+    update_actor = logs['updates'] % cfg.model.other_spec.policy_delay_update == 0
+    # Compute loss
+    q_loss, other_q = loss_module.value_loss(sampled_tensordict)
+    # Update critic
+    optimizer_critic.zero_grad()
+    q_loss.backward()
+    optimizer_critic.step()
+    # TODO this is a bug fix for the TD3 implementation, tell torchrl
+    sampled_tensordict = sampled_tensordict.set('td_error', other_q['td_error'].detach().max(0)[0])
+    # Update actor
+    if update_actor:
+        logs['actor_updates'] += 1
+        actor_loss, other_a = loss_module.actor_loss(sampled_tensordict)
+        optimizer_actor.zero_grad()
+        actor_loss.backward()
+        optimizer_actor.step()
+
+        # Update target params
+        target_net_updater.step()
+        if logger is not None:
+            logger.log(do_log_step=False, prefix="train", loss_actor=actor_loss.item(),
+                       actor_updates=logs['actor_updates'])
+            logger.log(do_log_step=False, prefix="debug", **other_a)
+    if logger is not None:
+        logger.log(do_log_step=False, prefix="train", loss_critic=q_loss.item(),
+                   updates=logs['updates'])
+        logger.log(prefix="debug", **other_q)
+    return sampled_tensordict
 
 
 def evaluate_policy(cfg, logger, logs, policy_module, test_env):
