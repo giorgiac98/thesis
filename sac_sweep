@@ -9,9 +9,16 @@ command:
 method: random
 parameters:
   frames_per_batch:
-    distribution: int_uniform
-    max: 9600
-    min: 100
+    distribution: categorical
+    values:
+      - 9600
+      - 8400
+      - 7200
+      - 6000
+      - 4800
+      - 3600
+      - 2400
+      - 1200
   num_envs:
     distribution: categorical
     values:
@@ -40,22 +47,43 @@ parameters:
       - 32
       - 64
   model.other_spec.init_random_frames:
-    distribution: int_uniform
-    max: 2000
-    min: 200
+    distribution: categorical
+    values:
+      - 8400
+      - 6000
+      - 3600
+      - 2400
+      - 1200
   model.other_spec.target_update_polyak:
     distribution: categorical
     values:
       - 0.005
       - 0.001
       - 0.01
+  model.other_spec.alpha_lr:
+    distribution: categorical
+    values:
+      - 3e-4
+      - 8e-4
+      - 3e-3
   update_rounds:
-    distribution: int_uniform
-    max: 100
-    min: 4
+    distribution: categorical
+    values:
+      - 100
+      - 90
+      - 80
+      - 70
+      - 60
+      - 50
+      - 40
+      - 30
+      - 20
+      - 10
   batch_size:
     distribution: categorical
     values:
+      - 8
+      - 16
       - 32
       - 64
       - 128

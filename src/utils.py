@@ -333,7 +333,7 @@ def make_optimizer(cfg, loss_module):
             splitted = [
                 {'params': list(loss_module.actor_network_params.flatten_keys().values()), 'lr': cfg.actor_lr},
                 {'params': list(loss_module.qvalue_network_params.flatten_keys().values()), 'lr': cfg.critic_lr},
-                {'params': [loss_module.log_alpha], 'lr': 3.0e-3}
+                {'params': [loss_module.log_alpha], 'lr': cfg.model.other_spec.alpha_lr}
             ]
             lambdas.append(lambda _: 1.)
         optim = torch.optim.Adam(splitted)
