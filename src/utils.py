@@ -64,15 +64,16 @@ class MyWandbLogger(WandbLogger):
 def define_metrics(cfg, logger):
     problem_metrics = {
         'msc': [],
-        'ems': ['eval/episode_reward', 'eval/episode_reward_values', 'eval/optimality', 'train/mean_episode_reward',
-                'train/optimality'],
+        'ems': ['eval/episode_reward', 'eval/episode_reward_values', 'eval/optimality',
+                'best/episode_reward', 'best/episodes', 'best/updates',
+                'train/mean_episode_reward', 'train/optimality'],
     }
     am = {
         'ppo': ['train/loss_objective', 'train/loss_critics', 'train/loss_entropy',
                 'debug/ESS', 'debug/entropy'],
         'sac': ['train/loss_actor', 'train/loss_qvalue', 'train/loss_alpha',
                 'debug/alpha', 'debug/entropy'],
-        'td3': ['train/loss_critic'],
+        'td3': ['train/loss_qvalue'],
     }
     algo_metrics = {k: [(x, 'train/updates') for x in v] for k, v in am.items()}
     algo_metrics['td3'].append(('train/loss_actor', 'train/actor_updates'))
@@ -357,6 +358,8 @@ def training_loop(cfg, policy_module, loss_module, other_modules, optim, collect
     logs['updates'] = 0
     logs['actor_updates'] = 0
     logs['best_episode_reward'] = -np.inf
+    logs['best_episodes'] = 0
+    logs['best_updates'] = 0
     optimal_cost = test_env.optimal_cost
     pbar = tqdm(total=collector.total_frames)
     eval_str = ""
@@ -460,11 +463,6 @@ def evaluate_policy(cfg, logger, logs, policy_module, test_env):
                                      for _ in range(cfg.eval_rollouts)])
         episode_reward = eval_rollouts[('next', 'episode_reward')][:, -1].mean().item()
         optimality = -test_env.optimal_cost / episode_reward
-        if logger is not None:
-            logger.log(prefix="eval", episode_reward=episode_reward, optimality=optimality,
-                       episode_reward_values=wandb.Histogram(
-                           np_histogram=np.histogram(eval_rollouts[('next', 'episode_reward')][:, -1])),
-                       action=wandb.Histogram(np_histogram=np.histogram(eval_rollouts['action'].mean(dim=0))))
         logs["eval reward"].append(eval_rollouts["next", "reward"].mean().item())
         logs["eval reward (sum)"].append(episode_reward)
         logs["eval step_count"].append(eval_rollouts["step_count"].max().item())
@@ -473,14 +471,23 @@ def evaluate_policy(cfg, logger, logs, policy_module, test_env):
             f"(best: {logs['best_episode_reward']: 4.4f}), "
             f"eval step-count: {logs['eval step_count'][-1]}"
         )
-
         if episode_reward > logs['best_episode_reward']:
             logs['best_episode_reward'] = episode_reward
+            logs['best_episodes'] = logs['episodes']
+            logs['best_updates'] = logs['updates']
             name = get_model_name(cfg)
             dir_name = get_dir_name(cfg, logger)
             torch.save(policy_module.state_dict(), f'{dir_name}/{name}')
             if logger is not None:
                 wandb.save(f'{dir_name}/{name}')
+                logger.log(do_log_step=False, prefix="best", episode_reward=episode_reward,
+                           episodes=logs['best_episodes'], updates=logs['best_updates'])
+        if logger is not None:
+            logger.log(prefix="eval", episode_reward=episode_reward, optimality=optimality,
+                       episode_reward_values=wandb.Histogram(
+                           np_histogram=np.histogram(eval_rollouts[('next', 'episode_reward')][:, -1])),
+                       action=wandb.Histogram(np_histogram=np.histogram(eval_rollouts['action'].mean(dim=0))))
+
         test_env.reset()  # reset the env after the eval rollout
         del eval_rollouts
     return eval_str
