@@ -22,14 +22,19 @@ def main(cfg: DictConfig):
         wandb_params = dict(config=wandb_cfg,
                             project="thesis-experiments",
                             group=cfg.data.problem,
-                            tags=[cfg.data.problem, cfg.model.policy,
-                                  str(cfg.data.params.instance), cfg.data.params.method])
+                            tags=[cfg.data.problem, cfg.model.policy])
+        if cfg.data.problem == 'ems':
+            wandb_params['tags'] += [str(cfg.data.params.instance), cfg.data.params.method]
+        else:
+            wandb_params['tags'] += [f'{cfg.data.params.num_prods} prods x {cfg.data.params.num_sets} sets',
+                                     f'{cfg.data.params.num_instances} instances']
         logger = MyWandbLogger(**wandb_params) if cfg.wandb_log else None
         if logger:
             define_metrics(cfg, logger)
         env_maker_function = env_maker(**cfg.data, device=device)
 
         test_env = env_maker_function(logger)
+        test_env.set_as_test()
         env_state_dict = test_env.transform[0].state_dict()
         env_action_spec, env_obs_spec = test_env.action_spec, test_env.observation_spec
         policy_module, loss_module, other = prepare_networks_and_policy(**cfg.model,

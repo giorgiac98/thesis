@@ -70,6 +70,7 @@ class VPPEnv(Env):
         """
         self.logger = logger
         self._do_log = False
+        self._is_test = False
         # Set numpy random seed to ensure reproducibility
         np.random.seed(0)
 
@@ -129,6 +130,13 @@ class VPPEnv(Env):
         noise = np.random.normal(0, self.noise_std_dev, self.n)
         self.tot_cons_real = self.tot_cons_pred + self.tot_cons_pred * noise
 
+    def set_as_test(self):
+        """
+        Set the env as test env and use the test_instances.
+        :return:
+        """
+        self._is_test = True
+
     def step(self, action: np.array):
         """
         Step function of the Gym environment.
@@ -160,7 +168,7 @@ class VPPEnv(Env):
         # We randomly choose an instance
         self.mr = random.randint(self.predictions.index.min(), self.predictions.index.max())
         self._create_instance_variables()
-        return self._get_observations(), {}
+        return self._get_observations(), {'optimal_cost': [self.optimal_cost]}
 
     def render(self, mode: str = 'ascii'):
         """
@@ -449,7 +457,8 @@ class SingleStepVPPEnv(VPPEnv):
 
         observations = self._get_observations()
 
-        return observations, reward, terminated, truncated, {'feasible': feasible, 'true cost': -reward}
+        return observations, reward, terminated, truncated, {'feasible': feasible, 'true cost': -reward,
+                                                             'optimal_cost': [self.optimal_cost]}
 
 
 ########################################################################################################################
@@ -662,7 +671,8 @@ class MarkovianVPPEnv(VPPEnv):
         #     raise Exception(f"Timestep cannot be greater than {self.n}")
         if (terminated or truncated) and self._do_log:
             self.log()
-        return observations, reward, terminated, truncated, {'feasible': feasible, 'true cost': self.cumulative_cost}
+        return observations, reward, terminated, truncated, {'feasible': feasible, 'true cost': self.cumulative_cost,
+                                                             'optimal_cost': [self.optimal_cost]}
 
     def log(self, ):
         """

@@ -4,9 +4,10 @@
 
 import os
 import pickle
+
+import gymnasium
 import numpy as np
 from tabulate import tabulate
-from gymnasium import Env
 from gymnasium.spaces import Box
 import random
 from sklearn.preprocessing import StandardScaler
@@ -15,8 +16,8 @@ import copy
 import inspect
 import shutil
 import argparse
-from gurobipy import Model, GRB
-from typing import List, Callable, Tuple, Any
+from gurobipy import Model, GRB, Env
+from typing import List, Callable, Tuple, Any, Dict
 
 ########################################################################################################################
 
@@ -299,7 +300,7 @@ class StochasticMinSetCover(MinSetCover):
 ########################################################################################################################
 
 
-class MinSetCoverEnv(Env):
+class MinSetCoverEnv(gymnasium.Env):
     """
     Gym wrapper for MSC.
 
@@ -324,19 +325,23 @@ class MinSetCoverEnv(Env):
                  test_split: float = 0.5):
 
         super(MinSetCoverEnv, self).__init__()
-
+        self._is_test = False
         self._num_prods = num_prods
         self._num_sets = num_sets
         self._instances_filepath = instances_filepath
-
+        self._seed = seed
         # Set the action and observation spaces required by Gym
-        self.action_space = Box(low=0, high=np.inf, shape=(self._num_prods,), dtype=np.float32)
+        # TODO set high to np.inf when the bug is fixed
+        # np.finfo(np.float32).max
+        self.action_space = Box(low=0, high=100, shape=(self._num_prods,), dtype=np.float32)
         self.observation_space = Box(low=0, high=np.inf, shape=(1,), dtype=np.float32)
 
         # Load instances from file
         print('[MinSetCoverEnv] - Loading instances...')
-        instances, demands, self._optimal_costs = self._load_instances()
+        self._data = self._load_instances()
         print('[MinSetCoverEnv] - Finished')
+        instances = list(self._data.keys())
+        demands = [v[0] for v in self._data.values()]
 
         # Split between training and test sets
         self._train_instances, self._test_instances, \
@@ -350,14 +355,12 @@ class MinSetCoverEnv(Env):
         self._demands_scaler = StandardScaler()
         self._demands_scaler.fit_transform(train_demands)
 
-    def _load_instances(self) -> Tuple[List[MinSetCover], np.ndarray, List[float]]:
+    def _load_instances(self) -> Dict[MinSetCover, Tuple[np.ndarray, float]]:
         """
         Load instances from file.
-        :return: list of MinSetCover, list of numpy.array; the generated instances and corresponding demands.
+        :return: dict of MinSetCover, list of numpy.array; the generated instances and corresponding demands.
         """
-        instances = list()
-        demands = list()
-        optimal_costs = list()
+        instances = dict()
 
         for f in os.listdir(self._instances_filepath):
             path = os.path.join(self._instances_filepath, f)
@@ -369,12 +372,14 @@ class MinSetCoverEnv(Env):
                 assert os.path.exists(optimal_cost_path), "optimal-cost.pkl not found"
 
                 instance = load_msc(instance_path)
-                instances.append(instance)
-                demands.append(instance.demands)
                 cost = pickle.load(open(optimal_cost_path, 'rb'))
-                optimal_costs.append(cost)
+                instances[instance] = (instance.demands, cost)
 
-        return instances, demands, optimal_costs
+        return instances
+
+    @property
+    def optimal_cost(self):
+        return [self._data[self._current_instance][1]]
 
     @property
     def current_instance(self):
@@ -400,6 +405,14 @@ class MinSetCoverEnv(Env):
     def test_instances(self):
         return self._test_instances
 
+    def set_as_test(self):
+        """
+        Set the env as test env and use the test_instances.
+        :return:
+        """
+        self._is_test = True
+        self.reset(self._seed)
+
     def reset(self,
               seed: int | None = None,
               options: dict[str, Any] | None = None, ) -> tuple[np.array, dict[str, Any]]:
@@ -407,16 +420,18 @@ class MinSetCoverEnv(Env):
         Reset the environment randomly selecting one of the instances.
         :return: numpy.array; the observations.
         """
+        seed = seed if seed is not None else self._seed
         super().reset(seed=seed)
-        self._current_instance = random.sample(self._train_instances, k=1)[0]
+        inst = self._train_instances if not self._is_test else self._test_instances
+        self._current_instance = random.sample(inst, k=1)[0]
         observables = self._current_instance.observables
 
         # FIXME: this is useless for ndarray
         observables = np.array([observables])
 
-        return observables, {}
+        return observables, {'optimal_cost': self.optimal_cost}
 
-    def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, bool, dict]:
+    def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, bool, bool, dict]:
         """
         What this method does:
         - Scale the demands.
@@ -425,7 +440,7 @@ class MinSetCoverEnv(Env):
         - Compute the real cost of the obtained solution.
         - Compute the penalty if demands are not satisfied.
         :param action: numpy.array; the action.
-        :return: numpy.array, float, boolean, dict; observations, reward, end of episode flag, info.
+        :return: numpy.array, float, boolean, boolean, dict; observations, reward, terminated, truncated, info.
         """
         action = np.expand_dims(action, axis=0)
         action = self._demands_scaler.inverse_transform(action)
@@ -446,10 +461,10 @@ class MinSetCoverEnv(Env):
                             not_satisfied_demands=not_satisfied_demands)
 
         # Environment information
-        info = {'Demands': action,
+        info = {'optimal_cost': self.optimal_cost,
+                'Demands': action,
                 'Solution': solution,
                 'Cost': cost,
-                'Solution': solution,
                 'Action': action}
 
         observables = self._current_instance.observables
@@ -457,7 +472,7 @@ class MinSetCoverEnv(Env):
         # FIXME: this is useless for ndarray
         observables = np.array([observables])
 
-        return observables, -cost, True, info
+        return observables, -cost, True, False, info
 
     def render(self, mode: str = 'human'):
         """
@@ -599,47 +614,6 @@ def load_msc(filepath: str):
 
 ########################################################################################################################
 
-
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument("datadir", type=str, help="Data directory")
-    parser.add_argument("--min-lambda", type=int, help="Minimum value of lambda that can be generated", default=1)
-    parser.add_argument("--max-lambda", type=int, help="Maximum value of lambda that can be generated", default=10)
-    parser.add_argument("--num-prods", type=int, help="Number of products", default=5)
-    parser.add_argument("--num-sets", type=int, help="Number of sets", default=25)
-    parser.add_argument("--density", type=float, help="Density of the availability matrix", default=0.02)
-    parser.add_argument("--num-instances", type=int, help="Number of generated instances", default=1000)
-    parser.add_argument("--seed", type=int, help="Seed to ensure reproducibility of the results", default=4)
-
-    args = parser.parse_args()
-
-    MIN_LMBD = int(args.min_lambda)
-    MAX_LMBD = int(args.max_lambda)
-    NUM_PRODS = int(args.num_prods)
-    NUM_SETS = int(args.num_sets)
-    DENSITY = float(args.density)
-    NUM_INSTANCES = int(args.num_instances)
-    SEED = int(args.seed)
-    DATA_PATH = args.datadir
-    DATA_PATH = os.path.join(DATA_PATH,
-                             f'{NUM_PRODS}x{NUM_SETS}',
-                             'linear',
-                             f'{NUM_INSTANCES}-instances',
-                             f'seed-{SEED}')
-
-    # Set the random seed to ensure reproducibility
-    np.random.seed(SEED)
-
-    # Generate training and test set in the specified directory
-    generate_training_and_test_sets(data_path=DATA_PATH,
-                                    num_instances=NUM_INSTANCES,
-                                    num_sets=NUM_SETS,
-                                    num_prods=NUM_PRODS,
-                                    density=DENSITY,
-                                    min_lmbd=MIN_LMBD,
-                                    max_lmbd=MAX_LMBD)
-
-
 def compute_cost(instance, decision_vars, not_satisfied_demands):
     """
     Compute the true cost of a solution for the MSC.
@@ -707,3 +681,46 @@ class MinSetCoverProblem:
         print_str += f'\nSolution cost: {obj_val}'
 
         return solution, obj_val
+
+
+########################################################################################################################
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument("datadir", type=str, help="Data directory")
+    parser.add_argument("--min-lambda", type=int, help="Minimum value of lambda that can be generated", default=1)
+    parser.add_argument("--max-lambda", type=int, help="Maximum value of lambda that can be generated", default=10)
+    parser.add_argument("--num-prods", type=int, help="Number of products", default=5)
+    parser.add_argument("--num-sets", type=int, help="Number of sets", default=25)
+    parser.add_argument("--density", type=float, help="Density of the availability matrix", default=0.02)
+    parser.add_argument("--num-instances", type=int, help="Number of generated instances", default=1000)
+    parser.add_argument("--seed", type=int, help="Seed to ensure reproducibility of the results", default=4)
+
+    args = parser.parse_args()
+
+    MIN_LMBD = int(args.min_lambda)
+    MAX_LMBD = int(args.max_lambda)
+    NUM_PRODS = int(args.num_prods)
+    NUM_SETS = int(args.num_sets)
+    DENSITY = float(args.density)
+    NUM_INSTANCES = int(args.num_instances)
+    SEED = int(args.seed)
+    DATA_PATH = args.datadir
+    DATA_PATH = os.path.join(DATA_PATH,
+                             f'{NUM_PRODS}x{NUM_SETS}',
+                             'linear',
+                             f'{NUM_INSTANCES}-instances',
+                             f'seed-{SEED}')
+
+    # Set the random seed to ensure reproducibility
+    np.random.seed(SEED)
+
+    # Generate training and test set in the specified directory
+    generate_training_and_test_sets(data_path=DATA_PATH,
+                                    num_instances=NUM_INSTANCES,
+                                    num_sets=NUM_SETS,
+                                    num_prods=NUM_PRODS,
+                                    density=DENSITY,
+                                    min_lmbd=MIN_LMBD,
+                                    max_lmbd=MAX_LMBD)

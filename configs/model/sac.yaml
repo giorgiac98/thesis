@@ -13,6 +13,7 @@ value_net_spec:
   num_cells: 8
   activation: relu
 other_spec:
+  alpha_lr: 3e-4
   init_random_frames: 8000
   target_update_polyak: 0.005
   sampler:
