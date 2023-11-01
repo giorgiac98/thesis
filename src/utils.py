@@ -193,8 +193,7 @@ def env_maker(problem: str,
 
 
 def prepare_networks_and_policy(policy, policy_spec, other_spec, actor_net_spec, value_net_spec, device,
-                                env_action_spec,
-                                input_shape):
+                                env_action_spec, input_shape):
     n_action = env_action_spec.shape[-1]
     if policy == 'ppo':
         actor_net = NormalParamWrapper(MLP(in_features=input_shape,
@@ -242,9 +241,11 @@ def prepare_networks_and_policy(policy, policy_spec, other_spec, actor_net_spec,
                                      num_cells=actor_net_spec.num_cells,
                                      activation_class=get_activation(actor_net_spec.activation)))
         module = SafeModule(net, in_keys=["observation"], out_keys=["loc", "scale"])
+        min_ = env_action_spec.space.minimum
+        max_ = env_action_spec.space.maximum
         dist_kwargs = {
-            "min": -20,  # env_action_spec.space.minimum,
-            "max": 20,  # env_action_spec.space.maximum,
+            "min": -20 if len(min_.shape) == 0 else min_,  # env_action_spec.space.minimum,
+            "max": 20 if len(max_.shape) == 0 else max_,  # TODO se si riporta il max per msc ad inf è un problema
             "tanh_loc": False,
         }
         # FIXME: è probabile che min e max lasciati di default a -1,1 siano la causa del problema,
@@ -268,9 +269,11 @@ def prepare_networks_and_policy(policy, policy_spec, other_spec, actor_net_spec,
         target_net_updater = SoftUpdate(loss_module, tau=other_spec.target_update_polyak)
         other = {'qvalue': qvalue, 'target_net_updater': target_net_updater}
     elif policy == 'td3':
+        min_ = env_action_spec.space.minimum
+        max_ = env_action_spec.space.maximum
         dist_kwargs = {
-            "low": -20,  # env_action_spec.space.minimum,
-            "high": 20,  # env_action_spec.space.maximum,
+            "low": -20 if len(min_.shape) == 0 else min_,  # env_action_spec.space.minimum,
+            "high": 20 if len(max_.shape) == 0 else max_,  # env_action_spec.space.maximum,
         }
         net = MLP(in_features=input_shape,
                   out_features=n_action,
