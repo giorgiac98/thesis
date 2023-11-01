@@ -429,7 +429,9 @@ class MinSetCoverEnv(gymnasium.Env):
         # FIXME: this is useless for ndarray
         observables = np.array([observables])
 
-        return observables, {'optimal_cost': self.optimal_cost}
+        return observables, {'optimal_cost': self.optimal_cost,
+                             'demands': self._current_instance.demands,
+                             'mod_action': np.zeros(shape=(self._num_prods,), dtype=np.float32)}
 
     def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, bool, bool, dict]:
         """
@@ -462,10 +464,10 @@ class MinSetCoverEnv(gymnasium.Env):
 
         # Environment information
         info = {'optimal_cost': self.optimal_cost,
-                'Demands': action,
-                'Solution': solution,
-                'Cost': cost,
-                'Action': action}
+                'demands': self._current_instance.demands,
+                'solution': solution,
+                'cost': cost,
+                'mod_action': action}
 
         observables = self._current_instance.observables
 

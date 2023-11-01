@@ -1,10 +1,9 @@
 import os
-from collections import defaultdict
 
 import numpy as np
 import pandas as pd
 import torch
-from tensordict.nn import NormalParamExtractor, TensorDictModule, InteractionType
+from tensordict.nn import TensorDictModule, InteractionType
 from torch import nn
 from torchrl.data import UnboundedContinuousTensorSpec
 from torchrl.envs import TransformedEnv, Compose, ObservationNorm, StepCounter, check_env_specs, set_exploration_type, \
@@ -20,8 +19,6 @@ import wandb
 from envs.vpp_envs import make_env
 from envs.generate_instances import MinSetCoverEnv
 import matplotlib.pyplot as plt
-
-EVALUATION_MODES = {'mean': ExplorationType.MEAN, 'random': ExplorationType.RANDOM}
 
 
 def set_seeds(seed: int):
@@ -134,12 +131,15 @@ def env_maker(problem: str,
               params: dict,
               device: torch.device):
     assert problem in ['msc', 'ems'], f"Environment not implemented for {problem} problem"
+    info_keys = ['optimal_cost']
+    spec = [UnboundedContinuousTensorSpec(shape=torch.Size([1]), dtype=torch.float64)]
     if problem == 'ems':
         predictions = pd.read_csv(params['predictions_filepath'])
         shift = np.load(params['shifts_filepath'])
         c_grid = np.load(params['prices_filepath'])
         instance = params['instance']
-        def create_env(logger=None):
+
+        def env_creator(logger=None):
             base_env, _, _ = make_env(f'unify-{params["method"]}',
                                       predictions.iloc[[instance]],
                                       shift,
@@ -148,18 +148,23 @@ def env_maker(problem: str,
                                       logger)
             return base_env
 
-        env_creator = create_env
     elif problem == 'msc':
+        # do not remove this line, in this way hydra resolves the path only once
         params['data_path'] = params['data_path']
-        env_creator = lambda logger: MinSetCoverEnv(num_prods=params['num_prods'],
-                                                    num_sets=params['num_sets'],
-                                                    instances_filepath=params['data_path'],
-                                                    seed=params['seed'])
+        info_keys.append('demands')
+        info_keys.append('mod_action')
+        spec.append(UnboundedContinuousTensorSpec(shape=torch.Size([params['num_prods']]), dtype=torch.int64))
+        spec.append(UnboundedContinuousTensorSpec(shape=torch.Size([params['num_prods']]), dtype=torch.float32))
+
+        def env_creator(logger=None):
+            return MinSetCoverEnv(num_prods=params['num_prods'],
+                                  num_sets=params['num_sets'],
+                                  instances_filepath=params['data_path'],
+                                  seed=params['seed'])
+
     else:
         raise NotImplementedError
 
-    info_keys = ['optimal_cost']
-    spec = [UnboundedContinuousTensorSpec(shape=torch.Size([1]), dtype=torch.float64)]
     def make_init_env(logger=None, state_dict=None):
         base_env = env_creator(logger)
         torchrl_env = GymWrapper(base_env, device=device)
@@ -192,17 +197,13 @@ def prepare_networks_and_policy(policy, policy_spec, other_spec, actor_net_spec,
                                 input_shape):
     n_action = env_action_spec.shape[-1]
     if policy == 'ppo':
-        actor_mlp = MLP(in_features=input_shape,
-                        out_features=2 * n_action,
-                        device=device,
-                        depth=actor_net_spec.depth,
-                        num_cells=actor_net_spec.num_cells,
-                        activation_class=get_activation(actor_net_spec.activation))
-        actor_net = nn.Sequential(
-            actor_mlp,
-            NormalParamExtractor(),
-        )
-        torch.nn.init.uniform_(actor_net[0][-1].weight, -1e-3, 1e-3)
+        actor_net = NormalParamWrapper(MLP(in_features=input_shape,
+                                           out_features=2 * n_action,
+                                           device=device,
+                                           depth=actor_net_spec.depth,
+                                           num_cells=actor_net_spec.num_cells,
+                                           activation_class=get_activation(actor_net_spec.activation)))
+        torch.nn.init.uniform_(actor_net.operator[-1].weight, -1e-3, 1e-3)
         policy_module = TensorDictModule(
             actor_net, in_keys=["observation"], out_keys=["loc", "scale"]
         )
@@ -286,16 +287,6 @@ def prepare_networks_and_policy(policy, policy_spec, other_spec, actor_net_spec,
                 **dist_kwargs,
             ),
         )
-        # OLD
-        # policy_module = ProbabilisticActor(
-        #     spec=env_action_spec,
-        #     in_keys=["param"],
-        #     module=module,
-        #     distribution_class=TanhDelta,
-        #     distribution_kwargs=dist_kwargs,
-        #     default_interaction_type=InteractionType.RANDOM,
-        #     return_log_prob=False)
-
         q_value_net = QValueModule(obs_spec=input_shape,
                                    act_spec=1,
                                    device=device,
@@ -483,12 +474,16 @@ def evaluate_policy(cfg, logger, logs, policy_module, test_env):
                 logger.log(do_log_step=False, prefix="best", optimality=optimality,
                            episodes=logs['best_episodes'], updates=logs['best_updates'])
         if logger is not None:
+            if cfg.data.problem == 'msc':
+                action = eval_rollouts[('next', 'mod_action')].reshape(3, 5)
+            else:
+                action = eval_rollouts['action'].mean(dim=0)
             logger.log(prefix="eval", episode_reward=episode_reward, optimality=optimality,
                        episode_reward_values=wandb.Histogram(
                            np_histogram=np.histogram(episode_rewards)),
                        optimality_values=wandb.Histogram(
                            np_histogram=np.histogram(- optimalities / episode_rewards)),
-                       action=wandb.Histogram(np_histogram=np.histogram(eval_rollouts['action'].mean(dim=0))))
+                       action=wandb.Histogram(np_histogram=np.histogram(action)))
 
         test_env.reset()  # reset the env after the eval rollout
         del eval_rollouts
@@ -517,8 +512,13 @@ def train_logs(logger, logs, optim, pbar, tensordict_data, it, do_log_step=True)
                  'scale': wandb.Histogram(np_histogram=np.histogram(tensordict_data['scale'].reshape(-1, 1)))}
         else:
             p = {'param': wandb.Histogram(np_histogram=np.histogram(tensordict_data['param'].reshape(-1, 1)))}
+
+        if 'mod_action' in t_keys:
+            action = tensordict_data[('next', 'mod_action')]
+        else:
+            action = tensordict_data['action'].reshape(-1, 1)
         logger.log(do_log_step=do_log_step, prefix="debug", actor_lr=actor_lr, critic_lr=critic_lr, **p,
-                   action=wandb.Histogram(np_histogram=np.histogram(tensordict_data['action'].reshape(-1, 1))))
+                   action=wandb.Histogram(np_histogram=np.histogram(action)))
     pbar.update(tensordict_data.numel())
     epi_str = f"episodes seen: {logs['episodes']}"
     train_opt_str = f"train optimality: {optimality: 4.4f} "
@@ -552,36 +552,49 @@ def final_evaluation(cfg, logger, policy_module, test_env, test_dir=None):
 
     with set_exploration_type(ExplorationType.MEAN), torch.no_grad():
         eval_rollout = test_env.rollout(100, policy_module)
-        episode_reward = eval_rollout[('next', 'episode_reward')][-1].mean().item()
-        optimality = -test_env.optimal_cost / episode_reward
+        episode_reward = eval_rollout[('next', 'episode_reward')][-1].item()
+        optimality = -eval_rollout[('next', 'optimal_cost')][-1].item() / episode_reward
+
+    if cfg.data.problem == 'ems':
         test_solution = test_env.history
+        optimal_solution_df = test_env.optimal_solution
+        axes = optimal_solution_df.plot(subplots=True, fontsize=12, figsize=(10, 7))
+        plt.xlabel('Timestamp', fontsize=14)
 
-    optimal_solution_df = test_env.optimal_solution
-    axes = optimal_solution_df.plot(subplots=True, fontsize=12, figsize=(10, 7))
-    plt.xlabel('Timestamp', fontsize=14)
+        for axis in axes:
+            axis.legend(loc=2, prop={'size': 12})
+        plt.plot()
+        if logger is not None:
+            optimal_solution_df['Timestep'] = list(range(len(optimal_solution_df)))
 
-    for axis in axes:
-        axis.legend(loc=2, prop={'size': 12})
-    plt.plot()
-    if logger is not None:
-        optimal_solution_df['Timestep'] = list(range(len(optimal_solution_df)))
-
-        d = {hs: wandb.plot.line_series(
-            xs=optimal_solution_df['Timestep'].to_numpy(),
-            ys=[optimal_solution_df[df], test_solution[hs]],
-            keys=["optimal action", "learned action"],
-            title=df,
-            xname="timesteps")
-            for hs, df in (('energy_bought', 'Energy bought'), ('energy_sold', 'Energy sold'),
-                           ('diesel_power', 'Diesel power consumption'), ('storage_capacity', 'Storage capacity'),
-                           ('input_storage', 'Input to storage'), ('output_storage', 'Output from storage'))}
-        action_table = wandb.Table(data=[[x, float(y)] for (x, y) in zip(optimal_solution_df['Timestep'],
-                                                                         test_solution['c_virt'])],
-                                   columns=["timestep", "action"])
-        d["actions"] = wandb.plot.line(action_table, "timestep", "action",
-                                       title="C_virt Actions")
-        logger.log(prefix='final_eval', episode_reward=episode_reward, optimality=optimality, **d,
-                   opt_chart=axes[0].get_figure(), opt_chart_data=wandb.Table(dataframe=optimal_solution_df))
+            d = {hs: wandb.plot.line_series(
+                xs=optimal_solution_df['Timestep'].to_numpy(),
+                ys=[optimal_solution_df[df], test_solution[hs]],
+                keys=["optimal action", "learned action"],
+                title=df,
+                xname="timesteps")
+                for hs, df in (('energy_bought', 'Energy bought'), ('energy_sold', 'Energy sold'),
+                               ('diesel_power', 'Diesel power consumption'), ('storage_capacity', 'Storage capacity'),
+                               ('input_storage', 'Input to storage'), ('output_storage', 'Output from storage'))}
+            action_table = wandb.Table(data=[[x, float(y)] for (x, y) in zip(optimal_solution_df['Timestep'],
+                                                                             test_solution['c_virt'])],
+                                       columns=["timestep", "action"])
+            d["actions"] = wandb.plot.line(action_table, "timestep", "action",
+                                           title="C_virt Actions")
+            logger.log(prefix='final_eval', episode_reward=episode_reward, optimality=optimality, **d,
+                       opt_chart=axes[0].get_figure(), opt_chart_data=wandb.Table(dataframe=optimal_solution_df))
+    else:  # msc
+        if logger is not None:
+            act_spec = test_env.action_space.shape[0]
+            action = eval_rollout[('next', 'mod_action')][0]
+            demands = eval_rollout['demands'][0]
+            t = wandb.Table(data=[[x, a, d, delta] for (x, a, d, delta) in zip(np.arange(act_spec),
+                                                                               action, demands, demands - action)],
+                            columns=["x", "action", 'demands', 'not_satisfied_demands'])
+            logger.log(prefix='final_eval', episode_reward=episode_reward, optimality=optimality,
+                       action=wandb.plot.bar(t, "x", "action"),
+                       demands=wandb.plot.bar(t, "x", "demands"),
+                       not_satisfied_demands=wandb.plot.bar(t, "x", "not_satisfied_demands"))
 
 
 def get_dir_name(cfg, logger=None):

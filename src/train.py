@@ -64,12 +64,10 @@ def main(cfg: DictConfig):
                                                batch_size=cfg.batch_size,
                                                sampler=sampler)
         optim, scheduler = make_optimizer(cfg, loss_module)
-        # test_env.do_log(True)
         training_loop(cfg, policy_module, loss_module, other, optim, collector, replay_buffer, device, test_env,
                       logger=logger, scheduler=scheduler)
-        # final evaluation and comparison with the oracle
-        if cfg.data.problem == 'ems':  # TODO: implement for msc
-            final_evaluation(cfg, logger, policy_module, test_env)
+        # final evaluation and comparison with the optimal solution
+        final_evaluation(cfg, logger, policy_module, test_env)
 
 
 if __name__ == "__main__":
