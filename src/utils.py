@@ -10,7 +10,7 @@ from torchrl.envs import TransformedEnv, Compose, ObservationNorm, StepCounter, 
     ExplorationType, RewardSum, RewardScaling, default_info_dict_reader
 from torchrl.envs.libs.gym import GymWrapper
 from torchrl.modules import MLP, ProbabilisticActor, TanhNormal, IndependentNormal, ValueOperator, NormalParamWrapper, \
-    SafeModule, TanhDelta, AdditiveGaussianWrapper, TanhModule, SafeSequential
+    SafeModule, AdditiveGaussianWrapper, TanhModule, SafeSequential
 from torchrl.objectives import ClipPPOLoss, SACLoss, SoftUpdate, TD3Loss
 from torchrl.objectives.value import GAE
 from torchrl.record.loggers.wandb import WandbLogger
@@ -65,8 +65,8 @@ def define_metrics(cfg, logger):
                        'best/optimality', 'best/episodes', 'best/updates',
                        'train/mean_episode_reward', 'train/optimality']
     problem_metrics = {
-        'msc': default_metrics,
-        'ems': default_metrics,
+        'msc': ['eval/regret', 'eval/regret_values', 'debug/regret', 'debug/regret_values'],
+        'ems': [],
     }
     am = {
         'ppo': ['train/loss_objective', 'train/loss_critics', 'train/loss_entropy',
@@ -79,6 +79,9 @@ def define_metrics(cfg, logger):
     algo_metrics['td3'].append(('train/loss_actor', 'train/actor_updates'))
 
     for metric in default_metrics:
+        logger.experiment.define_metric(metric, summary="max", step_metric='train/iteration')
+
+    for metric in problem_metrics:
         logger.experiment.define_metric(metric, summary="max", step_metric='train/iteration')
 
     logger.experiment.define_metric("train/collected_frames", step_metric='train/iteration')
@@ -478,6 +481,9 @@ def evaluate_policy(cfg, logger, logs, policy_module, test_env):
                            episodes=logs['best_episodes'], updates=logs['best_updates'])
         if logger is not None:
             if cfg.data.problem == 'msc':
+                regrets = (optimalities + episode_rewards) / optimalities
+                logger.log(do_log_step=False, prefix="eval", regret=regrets.mean().item(),
+                           regret_values=wandb.Histogram(np_histogram=np.histogram(regrets)))
                 action = eval_rollouts[('next', 'mod_action')].reshape(3, 5)
             else:
                 action = eval_rollouts['action'].mean(dim=0)
@@ -517,6 +523,9 @@ def train_logs(logger, logs, optim, pbar, tensordict_data, it, do_log_step=True)
             p = {'param': wandb.Histogram(np_histogram=np.histogram(tensordict_data['param'].reshape(-1, 1)))}
 
         if 'mod_action' in t_keys:
+            regrets = (optimal_costs + episode_rewards) / optimal_costs
+            logger.log(do_log_step=False, prefix="debug", regret=regrets.mean().item(),
+                       regret_values=wandb.Histogram(np_histogram=np.histogram(regrets)))
             action = tensordict_data[('next', 'mod_action')]
         else:
             action = tensordict_data['action'].reshape(-1, 1)
@@ -588,13 +597,14 @@ def final_evaluation(cfg, logger, policy_module, test_env, test_dir=None):
                        opt_chart=axes[0].get_figure(), opt_chart_data=wandb.Table(dataframe=optimal_solution_df))
     else:  # msc
         if logger is not None:
+            regret = (optimality + episode_reward) / optimality
             act_spec = test_env.action_space.shape[0]
             action = eval_rollout[('next', 'mod_action')][0]
             demands = eval_rollout['demands'][0]
             t = wandb.Table(data=[[x, a, d, delta] for (x, a, d, delta) in zip(np.arange(act_spec),
                                                                                action, demands, demands - action)],
                             columns=["x", "action", 'demands', 'not_satisfied_demands'])
-            logger.log(prefix='final_eval', episode_reward=episode_reward, optimality=optimality,
+            logger.log(prefix='final_eval', episode_reward=episode_reward, optimality=optimality, regret=regret,
                        action=wandb.plot.bar(t, "x", "action"),
                        demands=wandb.plot.bar(t, "x", "demands"),
                        not_satisfied_demands=wandb.plot.bar(t, "x", "not_satisfied_demands"))
