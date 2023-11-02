@@ -565,7 +565,8 @@ def final_evaluation(cfg, logger, policy_module, test_env, test_dir=None):
     with set_exploration_type(ExplorationType.MEAN), torch.no_grad():
         eval_rollout = test_env.rollout(100, policy_module)
         episode_reward = eval_rollout[('next', 'episode_reward')][-1].item()
-        optimality = -eval_rollout[('next', 'optimal_cost')][-1].item() / episode_reward
+        optimal_cost = eval_rollout[('next', 'optimal_cost')][-1].item()
+        optimality = -optimal_cost / episode_reward
 
     if cfg.data.problem == 'ems':
         test_solution = test_env.history
@@ -597,7 +598,7 @@ def final_evaluation(cfg, logger, policy_module, test_env, test_dir=None):
                        opt_chart=axes[0].get_figure(), opt_chart_data=wandb.Table(dataframe=optimal_solution_df))
     else:  # msc
         if logger is not None:
-            regret = (optimality + episode_reward) / optimality
+            regret = (optimal_cost + episode_reward) / optimal_cost
             act_spec = test_env.action_space.shape[0]
             action = eval_rollout[('next', 'mod_action')][0]
             demands = eval_rollout['demands'][0]
