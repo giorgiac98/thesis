@@ -294,7 +294,7 @@ def prepare_networks_and_policy(policy, policy_spec, other_spec, actor_net_spec,
             ),
         )
         q_value_net = QValueModule(obs_spec=input_shape,
-                                   act_spec=1,
+                                   act_spec=n_action,
                                    device=device,
                                    net_spec=value_net_spec)
         qvalue = ValueOperator(module=q_value_net, in_keys=['observation', 'action'])
@@ -309,7 +309,7 @@ def prepare_networks_and_policy(policy, policy_spec, other_spec, actor_net_spec,
         loss_module = TD3Loss(
             actor_network=policy_module,
             qvalue_network=qvalue,
-            bounds=(-20., 20.),
+            bounds=(dist_kwargs['low'], dist_kwargs['high']),
             **policy_spec,
         )
         loss_module.make_value_estimator(gamma=policy_spec.gamma)
@@ -424,17 +424,17 @@ def compute_td3_loss(cfg, logger, logs, loss_module, optim, sampled_tensordict, 
     logs['updates'] += 1
     update_actor = logs['updates'] % cfg.model.other_spec.policy_delay_update == 0
     # Compute loss
-    q_loss, other_q = loss_module.value_loss(sampled_tensordict)
+    q_loss, q_metadata = loss_module.value_loss(sampled_tensordict)
     # Update critic
     optimizer_critic.zero_grad()
     q_loss.backward()
     optimizer_critic.step()
     # TODO this is a bug fix for the TD3 implementation, tell torchrl
-    sampled_tensordict = sampled_tensordict.set('td_error', other_q['td_error'].detach().max(0)[0])
+    sampled_tensordict = sampled_tensordict.set('td_error', q_metadata['td_error'].detach().max(0)[0])
     # Update actor
     if update_actor:
         logs['actor_updates'] += 1
-        actor_loss, other_a = loss_module.actor_loss(sampled_tensordict)
+        actor_loss, a_metadata = loss_module.actor_loss(sampled_tensordict)
         optimizer_actor.zero_grad()
         actor_loss.backward()
         optimizer_actor.step()
@@ -444,11 +444,11 @@ def compute_td3_loss(cfg, logger, logs, loss_module, optim, sampled_tensordict, 
         if logger is not None:
             logger.log(do_log_step=False, prefix="train", loss_actor=actor_loss.item(),
                        actor_updates=logs['actor_updates'])
-            logger.log(do_log_step=False, prefix="debug", **other_a)
+            logger.log(do_log_step=False, prefix="debug", **a_metadata)
     if logger is not None:
         logger.log(do_log_step=False, prefix="train", loss_critic=q_loss.item(),
                    updates=logs['updates'])
-        logger.log(prefix="debug", **other_q)
+        logger.log(prefix="debug", **q_metadata)
     return sampled_tensordict
 
 
