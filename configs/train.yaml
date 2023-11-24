@@ -20,7 +20,7 @@ critic_lr: 0.0025
 schedule_lr: True
 schedule_factor: 0.9998
 max_grad_norm: 0.5
-eval_interval: 1
-eval_rollouts: 3
+eval_interval: 3
+eval_rollouts: 50
 eval_rollout_steps: 1000
 seed: 0

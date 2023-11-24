@@ -3,7 +3,7 @@ import os
 import numpy as np
 import pandas as pd
 import torch
-from tensordict.nn import TensorDictModule, InteractionType
+from tensordict.nn import TensorDictModule, InteractionType, AddStateIndependentNormalScale
 from torch import nn
 from torchrl.data import UnboundedContinuousTensorSpec
 from torchrl.envs import TransformedEnv, Compose, ObservationNorm, StepCounter, check_env_specs, set_exploration_type, \
@@ -65,7 +65,7 @@ def define_metrics(cfg, logger):
                        'best/optimality', 'best/episodes', 'best/updates',
                        'train/mean_episode_reward', 'train/optimality']
     problem_metrics = {
-        'msc': ['eval/regret', 'eval/regret_values', 'debug/regret', 'debug/regret_values'],
+        'msc': ['eval/regret', 'eval/regret_std', 'eval/regret_values', 'debug/regret', 'debug/regret_values'],
         'ems': [],
     }
     am = {
@@ -88,11 +88,14 @@ def define_metrics(cfg, logger):
     logger.experiment.define_metric("train/episodes", step_metric='train/iteration')
 
     logger.experiment.define_metric("eval/action", step_metric='train/iteration')
+    logger.experiment.define_metric("eval/episode_reward_std", step_metric='train/iteration')
+    logger.experiment.define_metric("eval/optimality_std", step_metric='train/iteration')
     logger.experiment.define_metric("debug/action", step_metric='train/iteration')
     logger.experiment.define_metric("debug/actor_lr", step_metric='train/iteration')
     logger.experiment.define_metric("debug/critic_lr", step_metric='train/iteration')
     logger.experiment.define_metric("debug/loc", step_metric='train/iteration')
     logger.experiment.define_metric("debug/scale", step_metric='train/iteration')
+    logger.experiment.define_metric("debug/param", step_metric='train/iteration')
 
     logger.experiment.define_metric("train/grad_norm", step_metric='train/updates')
 
@@ -132,7 +135,8 @@ def get_activation(act: str):
 
 def env_maker(problem: str,
               params: dict,
-              device: torch.device):
+              device: torch.device,
+              *args):
     assert problem in ['msc', 'ems'], f"Environment not implemented for {problem} problem"
     info_keys = ['optimal_cost']
     spec = [UnboundedContinuousTensorSpec(shape=torch.Size([1]), dtype=torch.float64)]
@@ -142,13 +146,12 @@ def env_maker(problem: str,
         c_grid = np.load(params['prices_filepath'])
         instance = params['instance']
 
-        def env_creator(logger=None):
+        def env_creator():
             base_env, _, _ = make_env(f'unify-{params["method"]}',
                                       predictions.iloc[[instance]],
                                       shift,
                                       c_grid,
-                                      params['noise_std_dev'],
-                                      logger)
+                                      params['noise_std_dev'])
             return base_env
 
     elif problem == 'msc':
@@ -159,7 +162,7 @@ def env_maker(problem: str,
         spec.append(UnboundedContinuousTensorSpec(shape=torch.Size([params['num_prods']]), dtype=torch.int64))
         spec.append(UnboundedContinuousTensorSpec(shape=torch.Size([params['num_prods']]), dtype=torch.float32))
 
-        def env_creator(logger=None):
+        def env_creator():
             return MinSetCoverEnv(num_prods=params['num_prods'],
                                   num_sets=params['num_sets'],
                                   instances_filepath=params['data_path'],
@@ -168,44 +171,46 @@ def env_maker(problem: str,
     else:
         raise NotImplementedError
 
-    def make_init_env(logger=None, state_dict=None):
-        base_env = env_creator(logger)
+    def make_init_env(state_dict=None):
+        base_env = env_creator()
         torchrl_env = GymWrapper(base_env, device=device)
         torchrl_env = torchrl_env.set_info_dict_reader(
             default_info_dict_reader(info_keys, spec=spec)
         )
+        transforms = [ObservationNorm(in_keys=["observation"])] if params['obs_norm'] else []
+        transforms += [StepCounter(), RewardSum(), RewardScaling(0, 0.05)]
         e = TransformedEnv(
             torchrl_env,
-            Compose(
-                # normalize observations
-                ObservationNorm(in_keys=["observation"]),
-                StepCounter(),
-                RewardSum(),
-                RewardScaling(0, 0.05)
-            ),
+            Compose(*transforms),
         )
-        if state_dict is not None:
-            e.transform[0].init_stats(num_iter=3, reduce_dim=0, cat_dim=0)
-            e.transform[0].load_state_dict(state_dict)
-        else:
-            e.transform[0].init_stats(num_iter=500, reduce_dim=0, cat_dim=0)
+        if params['obs_norm']:
+            if state_dict is not None:
+                e.transform[0].init_stats(num_iter=3, reduce_dim=0, cat_dim=0)
+                e.transform[0].load_state_dict(state_dict)
+            else:
+                e.transform[0].init_stats(num_iter=500, reduce_dim=0, cat_dim=0)
         check_env_specs(e)
         return e
 
     return make_init_env
 
 
-def prepare_networks_and_policy(policy, policy_spec, other_spec, actor_net_spec, value_net_spec, device,
-                                env_action_spec, input_shape):
+def prepare_networks_and_policy(policy, policy_spec, other_spec, actor_net_spec, value_net_spec,
+                                device, problem_spec, env_action_spec, input_shape):
     n_action = env_action_spec.shape[-1]
     if policy == 'ppo':
-        actor_net = NormalParamWrapper(MLP(in_features=input_shape,
-                                           out_features=2 * n_action,
-                                           device=device,
-                                           depth=actor_net_spec.depth,
-                                           num_cells=actor_net_spec.num_cells,
-                                           activation_class=get_activation(actor_net_spec.activation)))
-        torch.nn.init.uniform_(actor_net.operator[-1].weight, -1e-3, 1e-3)
+        actor_net = MLP(in_features=input_shape,
+                        out_features=n_action,  # outputs only loc
+                        device=device,
+                        depth=actor_net_spec.depth,
+                        num_cells=actor_net_spec.num_cells,
+                        activation_class=get_activation(actor_net_spec.activation))
+        torch.nn.init.uniform_(actor_net[-1].weight, -1e-3, 1e-3)
+        # Add state-independent normal scale
+        actor_net = torch.nn.Sequential(
+            actor_net,
+            AddStateIndependentNormalScale(n_action),
+        )
         policy_module = TensorDictModule(
             actor_net, in_keys=["observation"], out_keys=["loc", "scale"]
         )
@@ -243,20 +248,26 @@ def prepare_networks_and_policy(policy, policy_spec, other_spec, actor_net_spec,
                                      depth=actor_net_spec.depth,
                                      num_cells=actor_net_spec.num_cells,
                                      activation_class=get_activation(actor_net_spec.activation)))
+        torch.nn.init.uniform_(net.operator[-1].weight, -1e-3, 1e-3)
         module = SafeModule(net, in_keys=["observation"], out_keys=["loc", "scale"])
-        min_ = env_action_spec.space.minimum
-        max_ = env_action_spec.space.maximum
-        dist_kwargs = {
-            "min": -20 if len(min_.shape) == 0 else min_,  # env_action_spec.space.minimum,
-            "max": 20 if len(max_.shape) == 0 else max_,  # TODO se si riporta il max per msc ad inf è un problema
-            "tanh_loc": False,
-        }
-        # FIXME: è probabile che min e max lasciati di default a -1,1 siano la causa del problema,
-        # ma settando -inf, inf non funziona perché restituisce nan
+
+        if problem_spec.use_tanh:
+            min_ = problem_spec.low if 'low' in problem_spec else env_action_spec.space.minimum
+            max_ = problem_spec.high if 'high' in problem_spec else env_action_spec.space.maximum
+            dist_kwargs = {
+                "min": min_,
+                "max": max_,
+                "tanh_loc": False,
+            }
+            dist_class = TanhNormal
+        else:
+            dist_class = IndependentNormal
+            dist_kwargs = {}
+
         policy_module = ProbabilisticActor(module=module,
                                            in_keys=["loc", "scale"],
                                            spec=env_action_spec,
-                                           distribution_class=TanhNormal,
+                                           distribution_class=dist_class,
                                            distribution_kwargs=dist_kwargs,
                                            default_interaction_type=InteractionType.RANDOM,
                                            )
@@ -272,12 +283,6 @@ def prepare_networks_and_policy(policy, policy_spec, other_spec, actor_net_spec,
         target_net_updater = SoftUpdate(loss_module, tau=other_spec.target_update_polyak)
         other = {'qvalue': qvalue, 'target_net_updater': target_net_updater}
     elif policy == 'td3':
-        min_ = env_action_spec.space.minimum
-        max_ = env_action_spec.space.maximum
-        dist_kwargs = {
-            "low": -20 if len(min_.shape) == 0 else min_,  # env_action_spec.space.minimum,
-            "high": 20 if len(max_.shape) == 0 else max_,  # env_action_spec.space.maximum,
-        }
         net = MLP(in_features=input_shape,
                   out_features=n_action,
                   device=device,
@@ -285,14 +290,25 @@ def prepare_networks_and_policy(policy, policy_spec, other_spec, actor_net_spec,
                   num_cells=actor_net_spec.num_cells,
                   activation_class=get_activation(actor_net_spec.activation))
         module = SafeModule(net, in_keys=["observation"], out_keys=["param"])
-        policy_module = SafeSequential(
-            module,
-            TanhModule(
-                in_keys=["param"],
-                out_keys=["action"],
-                **dist_kwargs,
-            ),
-        )
+        min_ = problem_spec.low if 'low' in problem_spec else env_action_spec.space.minimum
+        max_ = problem_spec.high if 'high' in problem_spec else env_action_spec.space.maximum
+        if problem_spec.use_tanh:
+            dist_kwargs = {
+                "low": min_,
+                "high": max_,
+            }
+            policy_module = SafeSequential(
+                module,
+                TanhModule(
+                    in_keys=["param"],
+                    out_keys=["action"],
+                    **dist_kwargs,
+                ),
+            )
+        else:
+            # TODO testare e vedere come performa (magari si può usare ReLu piuttosto che Identity)
+            policy_module = SafeSequential(module,
+                                           TensorDictModule(nn.Identity(), in_keys=["param"], out_keys=["action"]))
         q_value_net = QValueModule(obs_spec=input_shape,
                                    act_spec=n_action,
                                    device=device,
@@ -309,7 +325,7 @@ def prepare_networks_and_policy(policy, policy_spec, other_spec, actor_net_spec,
         loss_module = TD3Loss(
             actor_network=policy_module,
             qvalue_network=qvalue,
-            bounds=(dist_kwargs['low'], dist_kwargs['high']),
+            bounds=(min_, max_),
             **policy_spec,
         )
         loss_module.make_value_estimator(gamma=policy_spec.gamma)
@@ -452,53 +468,6 @@ def compute_td3_loss(cfg, logger, logs, loss_module, optim, sampled_tensordict, 
     return sampled_tensordict
 
 
-def evaluate_policy(cfg, logger, logs, policy_module, test_env):
-    with set_exploration_type(ExplorationType.MEAN), torch.no_grad():
-        # execute a rollout with the trained policy
-        eval_rollouts = torch.stack([test_env.rollout(cfg.eval_rollout_steps, policy_module)
-                                     for _ in range(cfg.eval_rollouts)])
-        episode_rewards = eval_rollouts[('next', 'episode_reward')][:, -1]
-        optimalities = eval_rollouts[('next', 'optimal_cost')][:, -1]
-        episode_reward = episode_rewards.mean().item()
-        optimality = (-optimalities / episode_rewards).mean().item()
-        logs["eval optimality"].append(optimality)
-        logs["eval reward (sum)"].append(episode_reward)
-        eval_str = (
-            f"eval cumulative reward: {logs['eval reward (sum)'][-1]: 4.4f} "
-            f"eval optimality: {logs['eval optimality'][-1]: 4.4f} "
-            f"(best: {logs['best_optimality']: 4.4f}), "
-        )
-        if optimality > logs['best_optimality']:
-            logs['best_optimality'] = optimality
-            logs['best_episodes'] = logs['episodes']
-            logs['best_updates'] = logs['updates']
-            name = get_model_name(cfg)
-            dir_name = get_dir_name(cfg, logger)
-            torch.save(policy_module.state_dict(), f'{dir_name}/{name}')
-            if logger is not None:
-                wandb.save(f'{dir_name}/{name}')
-                logger.log(do_log_step=False, prefix="best", optimality=optimality,
-                           episodes=logs['best_episodes'], updates=logs['best_updates'])
-        if logger is not None:
-            if cfg.data.problem == 'msc':
-                regrets = (optimalities + episode_rewards) / optimalities
-                logger.log(do_log_step=False, prefix="eval", regret=regrets.mean().item(),
-                           regret_values=wandb.Histogram(np_histogram=np.histogram(regrets)))
-                action = eval_rollouts[('next', 'mod_action')].reshape(3, 5)
-            else:
-                action = eval_rollouts['action'].mean(dim=0)
-            logger.log(prefix="eval", episode_reward=episode_reward, optimality=optimality,
-                       episode_reward_values=wandb.Histogram(
-                           np_histogram=np.histogram(episode_rewards)),
-                       optimality_values=wandb.Histogram(
-                           np_histogram=np.histogram(- optimalities / episode_rewards)),
-                       action=wandb.Histogram(np_histogram=np.histogram(action)))
-
-        test_env.reset()  # reset the env after the eval rollout
-        del eval_rollouts
-    return eval_str
-
-
 def train_logs(logger, logs, optim, pbar, tensordict_data, it, do_log_step=True):
     dones = tensordict_data[('next', 'done')]
     optimal_costs = tensordict_data[('next', 'optimal_cost')][dones]
@@ -556,17 +525,75 @@ def compute_loss(cfg, device, logs, logger, loss_module, optim, subdata):
         logger.log(prefix="debug", **{key: loss for key, loss in loss_vals.items() if not key.startswith("loss_")})
 
 
+def eval_and_log(cfg, logger, policy_module, test_env, prefix='eval'):
+    with set_exploration_type(ExplorationType.MEAN), torch.no_grad():
+        # execute rollouts with the trained policy
+        eval_rollouts = torch.stack([test_env.rollout(cfg.eval_rollout_steps, policy_module)
+                                     for _ in range(cfg.eval_rollouts)])
+    episode_rewards = eval_rollouts[('next', 'episode_reward')][:, -1]
+    optimal_values = eval_rollouts[('next', 'optimal_cost')][:, -1]
+    optimalities = - optimal_values / episode_rewards
+    episode_reward = episode_rewards.mean().item()
+    optimality = optimalities.mean().item()
+    regrets = None
+    if logger is not None:
+        if cfg.data.problem == 'msc':
+            regrets = (optimal_values + episode_rewards) / optimal_values
+            logger.log(do_log_step=False, prefix=prefix, regret=regrets.mean().item(),
+                       regret_std=regrets.std().item(),
+                       regret_values=wandb.Histogram(np_histogram=np.histogram(regrets)))
+            action = eval_rollouts[('next', 'mod_action')].reshape(cfg.eval_rollouts,
+                                                                   test_env.action_space.shape[0])
+        else:
+            action = eval_rollouts['action'].reshape(cfg.eval_rollouts, test_env.n)
+        logger.log(prefix=prefix, episode_reward=episode_reward, optimality=optimality,
+                   episode_reward_std=episode_rewards.std(), optimality_std=optimalities.std(),
+                   episode_reward_values=wandb.Histogram(
+                       np_histogram=np.histogram(episode_rewards)),
+                   optimality_values=wandb.Histogram(
+                       np_histogram=np.histogram(optimalities)),
+                   action=wandb.Histogram(np_histogram=np.histogram(action)))
+    return {'episode_reward': episode_reward, 'optimality': optimality,
+            'episode_rewards': episode_rewards, 'optimal_values': optimal_values,
+            'optimalities': optimalities, 'regrets': regrets,
+            'eval_rollouts': eval_rollouts}
+
+
+def evaluate_policy(cfg, logger, logs, policy_module, test_env):
+    info = eval_and_log(cfg, logger, policy_module, test_env)
+    episode_reward, optimality = info['episode_reward'], info['optimality']
+    logs["eval optimality"].append(optimality)
+    logs["eval reward (sum)"].append(episode_reward)
+    eval_str = (
+        f"eval cumulative reward: {logs['eval reward (sum)'][-1]: 4.4f} "
+        f"eval optimality: {logs['eval optimality'][-1]: 4.4f} "
+        f"(best: {logs['best_optimality']: 4.4f}), "
+    )
+    if optimality > logs['best_optimality']:
+        logs['best_optimality'] = optimality
+        logs['best_episodes'] = logs['episodes']
+        logs['best_updates'] = logs['updates']
+        name = get_model_name(cfg)
+        dir_name = get_dir_name(cfg, logger)
+        torch.save(policy_module.state_dict(), f'{dir_name}/{name}')
+        if logger is not None:
+            wandb.save(f'{dir_name}/{name}')
+            logger.log(do_log_step=False, prefix="best", optimality=optimality,
+                       episodes=logs['best_episodes'], updates=logs['best_updates'])
+
+    test_env.reset()  # reset the env after the eval rollout
+    eval_rollouts = info.pop('eval_rollouts')
+    del eval_rollouts
+    return eval_str
+
+
 def final_evaluation(cfg, logger, policy_module, test_env, test_dir=None):
     name = get_model_name(cfg)
     dir_name = get_dir_name(cfg, logger) if test_dir is None else test_dir
     policy_module.load_state_dict(torch.load(f'{dir_name}/{name}'))
     policy_module.eval()  # might not be necessary
 
-    with set_exploration_type(ExplorationType.MEAN), torch.no_grad():
-        eval_rollout = test_env.rollout(100, policy_module)
-        episode_reward = eval_rollout[('next', 'episode_reward')][-1].item()
-        optimal_cost = eval_rollout[('next', 'optimal_cost')][-1].item()
-        optimality = -optimal_cost / episode_reward
+    info = eval_and_log(cfg, logger, policy_module, test_env, prefix='final_eval_stats')
 
     if cfg.data.problem == 'ems':
         test_solution = test_env.history
@@ -594,18 +621,23 @@ def final_evaluation(cfg, logger, policy_module, test_env, test_dir=None):
                                        columns=["timestep", "action"])
             d["actions"] = wandb.plot.line(action_table, "timestep", "action",
                                            title="C_virt Actions")
-            logger.log(prefix='final_eval', episode_reward=episode_reward, optimality=optimality, **d,
+            last_episode_reward = info['episode_rewards'][-1].item()
+            last_optimality = info['optimalities'][-1].item()
+            logger.log(prefix='final_eval', episode_reward=last_episode_reward, optimality=last_optimality, **d,
                        opt_chart=axes[0].get_figure(), opt_chart_data=wandb.Table(dataframe=optimal_solution_df))
     else:  # msc
         if logger is not None:
-            regret = (optimal_cost + episode_reward) / optimal_cost
             act_spec = test_env.action_space.shape[0]
-            action = eval_rollout[('next', 'mod_action')][0]
-            demands = eval_rollout['demands'][0]
+            last_episode_reward = info['episode_rewards'][-1].item()
+            last_optimality = info['optimalities'][-1].item()
+            action = info['eval_rollouts'][('next', 'mod_action')][-1, 0]
+            demands = info['eval_rollouts']['demands'][-1, 0]
+            regret = info['regrets'][-1].item()
             t = wandb.Table(data=[[x, a, d, delta] for (x, a, d, delta) in zip(np.arange(act_spec),
                                                                                action, demands, demands - action)],
                             columns=["x", "action", 'demands', 'not_satisfied_demands'])
-            logger.log(prefix='final_eval', episode_reward=episode_reward, optimality=optimality, regret=regret,
+            logger.log(prefix='final_eval', episode_reward=last_episode_reward,
+                       optimality=last_optimality, regret=regret,
                        action=wandb.plot.bar(t, "x", "action"),
                        demands=wandb.plot.bar(t, "x", "demands"),
                        not_satisfied_demands=wandb.plot.bar(t, "x", "not_satisfied_demands"))

@@ -1,5 +1,8 @@
 problem: msc
+problem_spec:
+  use_tanh: False
 params:
+  obs_norm: True
   seed: 4
   num_prods: 5
   num_sets: 25

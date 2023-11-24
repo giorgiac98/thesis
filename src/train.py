@@ -31,34 +31,37 @@ def main(cfg: DictConfig):
         logger = MyWandbLogger(**wandb_params) if cfg.wandb_log else None
         if logger:
             define_metrics(cfg, logger)
-        env_maker_function = env_maker(**cfg.data, device=device)
+        env_maker_function = env_maker(cfg.data.problem, cfg.data.params, device=device)
 
-        test_env = env_maker_function(logger)
-        test_env.set_as_test()
+        test_env = env_maker_function()
+        test_env.set_as_test(cfg.eval_rollouts)
         env_state_dict = test_env.transform[0].state_dict()
         env_action_spec, env_obs_spec = test_env.action_spec, test_env.observation_spec
         policy_module, loss_module, other = prepare_networks_and_policy(**cfg.model,
                                                                         device=device,
+                                                                        problem_spec=cfg.data.problem_spec,
                                                                         env_action_spec=env_action_spec,
                                                                         input_shape=env_obs_spec['observation'].shape[
                                                                             0])
         total_frames = cfg.frames_per_batch * cfg.train_iter
         exploration_policy = policy_module if cfg.model.policy != 'td3' else other['actor_model_explore']
+        init_random_frames = cfg.model.other_spec.init_random_frames if 'init_random_frames' in cfg.model.other_spec else None
         collector = MultiSyncDataCollector(frames_per_batch=cfg.frames_per_batch,
                                            create_env_fn=[env_maker_function] * cfg.num_envs,
                                            create_env_kwargs=[{'state_dict': env_state_dict}] * cfg.num_envs,
                                            policy=exploration_policy,
+                                           init_random_frames=init_random_frames,
                                            total_frames=total_frames,
                                            device=device)
         collector.set_seed(cfg.seed)
         buffer_size = cfg.frames_per_batch if cfg.model.policy == 'ppo' else cfg.buffer_size
-        if cfg.prb:
+        if cfg.prb and cfg.model.policy != 'ppo':
             sampler = PrioritizedSampler(buffer_size, alpha=0.7, beta=0.5)
         else:
             sampler = hydra.utils.instantiate(cfg.model.other_spec.sampler)
         replay_buffer = TensorDictReplayBuffer(storage=LazyMemmapStorage(
                                                    buffer_size,
-                                                   scratch_dir='/tmp/' if cfg.model.policy != 'ppo' else None,
+                                                   scratch_dir='/tmp/',
                                                    device=device,
                                                ),
                                                batch_size=cfg.batch_size,

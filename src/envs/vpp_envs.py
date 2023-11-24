@@ -59,8 +59,7 @@ class VPPEnv(Env):
                  c_grid,
                  shift,
                  noise_std_dev=0.02,
-                 savepath=None,
-                 logger=None):
+                 savepath=None):
         """
         :param predictions: pandas.Dataframe; predicted PV and Load.
         :param c_grid: numpy.array; c_grid values.
@@ -68,8 +67,6 @@ class VPPEnv(Env):
         :param noise_std_dev: float; the standard deviation of the additive gaussian noise for the realizations.
         :param savepath: string; if not None, the gurobi models are saved to this directory.
         """
-        self.logger = logger
-        self._do_log = False
         self._is_test = False
         # Set numpy random seed to ensure reproducibility
         np.random.seed(0)
@@ -97,9 +94,6 @@ class VPPEnv(Env):
 
         self._create_instance_variables()
         self._load_optimal_values()
-
-    def do_log(self, do_log: bool):
-        self._do_log = do_log
 
     def _load_optimal_values(self):
         data_dir = 'envs/ems_data/oracle'
@@ -130,7 +124,7 @@ class VPPEnv(Env):
         noise = np.random.normal(0, self.noise_std_dev, self.n)
         self.tot_cons_real = self.tot_cons_pred + self.tot_cons_pred * noise
 
-    def set_as_test(self):
+    def set_as_test(self, num_test_instances: int = 10):
         """
         Set the env as test env and use the test_instances.
         :return:
@@ -282,8 +276,7 @@ class SingleStepVPPEnv(VPPEnv):
                  c_grid,
                  shift,
                  noise_std_dev=0.02,
-                 savepath=None,
-                 logger=None):
+                 savepath=None):
         """
         :param predictions: pandas.Dataframe; predicted PV and Load.
         :param c_grid: numpy.array; c_grid values.
@@ -292,7 +285,7 @@ class SingleStepVPPEnv(VPPEnv):
         :param savepath: string; if not None, the gurobi models are saved to this directory.
         """
 
-        super(SingleStepVPPEnv, self).__init__(predictions, c_grid, shift, noise_std_dev, savepath, logger)
+        super(SingleStepVPPEnv, self).__init__(predictions, c_grid, shift, noise_std_dev, savepath)
 
         # Here we define the observation and action spaces
         self.observation_space = Box(low=0, high=np.inf, shape=(self.n * 2,), dtype=np.float32)
@@ -479,8 +472,7 @@ class MarkovianVPPEnv(VPPEnv):
                  c_grid,
                  shift,
                  noise_std_dev=0.02,
-                 savepath=None,
-                 logger=None):
+                 savepath=None):
         """
         :param predictions: pandas.Dataframe; predicted PV and Load.
         :param c_grid: numpy.array; c_grid values.
@@ -489,7 +481,7 @@ class MarkovianVPPEnv(VPPEnv):
         :param savepath: string; if not None, the gurobi models are saved to this directory.
         """
 
-        super(MarkovianVPPEnv, self).__init__(predictions, c_grid, shift, noise_std_dev, savepath, logger)
+        super(MarkovianVPPEnv, self).__init__(predictions, c_grid, shift, noise_std_dev, savepath)
 
         # Here we define the observation and action spaces
         self.observation_space = Box(low=-np.inf, high=np.inf, shape=(self.n * 3 + 2,), dtype=np.float32)
@@ -669,21 +661,8 @@ class MarkovianVPPEnv(VPPEnv):
         #     done = False
         # else:
         #     raise Exception(f"Timestep cannot be greater than {self.n}")
-        if (terminated or truncated) and self._do_log:
-            self.log()
         return observations, reward, terminated, truncated, {'feasible': feasible, 'true cost': self.cumulative_cost,
                                                              'optimal_cost': [self.optimal_cost]}
-
-    def log(self, ):
-        """
-        Logs training info using wandb.
-        :return:
-        """
-        if self.logger is not None:
-            means = dict()
-            for ax, (k, hist) in enumerate(self.history.items()):
-                means[f'avg_{k}'] = np.mean(hist)
-            self.logger.log(prefix='env_final_eval', **means)
 
 
 ########################################################################################################################
@@ -692,8 +671,7 @@ def make_env(method,
              predictions,
              shift,
              c_grid,
-             noise_std_dev,
-             logger=None):
+             noise_std_dev):
     # Set episode length and discount factor for single-step and MDP version
     if 'sequential' in method:
         max_episode_length = TIMESTEP_IN_A_DAY
@@ -710,8 +688,7 @@ def make_env(method,
                               shift=shift,
                               c_grid=c_grid,
                               noise_std_dev=noise_std_dev,
-                              savepath=None,
-                              logger=logger)
+                              savepath=None)
 
         # Garage wrapping of a gym environment
         # env = GymEnv(env, max_episode_length=max_episode_length)
@@ -722,8 +699,7 @@ def make_env(method,
                                shift=shift,
                                c_grid=c_grid,
                                noise_std_dev=noise_std_dev,
-                               savepath=None,
-                               logger=logger)
+                               savepath=None)
 
         # Garage wrapping of a gym environment
         # env = GymEnv(env, max_episode_length=max_episode_length)
@@ -731,5 +707,3 @@ def make_env(method,
         raise NotImplementedError()
 
     return env, discount, max_episode_length
-
-

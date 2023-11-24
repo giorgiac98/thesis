@@ -18,6 +18,7 @@ import shutil
 import argparse
 from gurobipy import Model, GRB, Env
 from typing import List, Callable, Tuple, Any, Dict
+from itertools import cycle
 
 ########################################################################################################################
 
@@ -322,7 +323,7 @@ class MinSetCoverEnv(gymnasium.Env):
                  num_prods: int,
                  num_sets: int,
                  seed: int,
-                 test_split: float = 0.5):
+                 test_split: float = 0.3):
 
         super(MinSetCoverEnv, self).__init__()
         self._is_test = False
@@ -330,11 +331,6 @@ class MinSetCoverEnv(gymnasium.Env):
         self._num_sets = num_sets
         self._instances_filepath = instances_filepath
         self._seed = seed
-        # Set the action and observation spaces required by Gym
-        # TODO set high to np.inf when the bug is fixed
-        # np.finfo(np.float32).max
-        self.action_space = Box(low=0, high=100, shape=(self._num_prods,), dtype=np.float32)
-        self.observation_space = Box(low=0, high=np.inf, shape=(1,), dtype=np.float32)
 
         # Load instances from file
         print('[MinSetCoverEnv] - Loading instances...')
@@ -343,6 +339,12 @@ class MinSetCoverEnv(gymnasium.Env):
         instances = list(self._data.keys())
         demands = [v[0] for v in self._data.values()]
 
+        # Set the action and observation spaces required by Gym
+        # TODO set high to np.inf when the bug is fixed
+        max_value = 100 * (int(np.array(demands).max()/100) + 1)
+        self.action_space = Box(low=0, high=max_value, shape=(self._num_prods,), dtype=np.float32)
+        self.observation_space = Box(low=0, high=np.inf, shape=(1,), dtype=np.float32)
+
         # Split between training and test sets
         self._train_instances, self._test_instances, \
             train_demands, test_demands = \
@@ -350,6 +352,8 @@ class MinSetCoverEnv(gymnasium.Env):
 
         # Randomly select one of the instances
         self._current_instance = random.sample(self._train_instances, k=1)[0]
+        self._chosen_test_instances = None
+        self._it_test_instances = None
 
         # Standardize demands
         self._demands_scaler = StandardScaler()
@@ -405,12 +409,14 @@ class MinSetCoverEnv(gymnasium.Env):
     def test_instances(self):
         return self._test_instances
 
-    def set_as_test(self):
+    def set_as_test(self, num_test_instances: int = 10):
         """
         Set the env as test env and use the test_instances.
         :return:
         """
         self._is_test = True
+        self._chosen_test_instances = random.sample(self._test_instances, k=num_test_instances)
+        self._it_test_instances = cycle(self._chosen_test_instances)
         self.reset(self._seed)
 
     def reset(self,
@@ -422,8 +428,10 @@ class MinSetCoverEnv(gymnasium.Env):
         """
         seed = seed if seed is not None else self._seed
         super().reset(seed=seed)
-        inst = self._train_instances if not self._is_test else self._test_instances
-        self._current_instance = random.sample(inst, k=1)[0]
+        if self._is_test:
+            self._current_instance = next(self._it_test_instances)
+        else:
+            self._current_instance = random.sample(self._train_instances, k=1)[0]
         observables = self._current_instance.observables
 
         # FIXME: this is useless for ndarray

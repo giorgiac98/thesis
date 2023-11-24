@@ -1,4 +1,8 @@
 problem: ems
+problem_spec:
+  use_tanh: True
+  low: -20
+  high: 20
 params:
   predictions_filepath: ${hydra:runtime.cwd}/envs/ems_data/Dataset10k.csv
   prices_filepath: ${hydra:runtime.cwd}/envs/ems_data/gmePrices.npy
@@ -6,3 +10,4 @@ params:
   noise_std_dev: 0.01
   instance: 2732
   method: sequential
+  obs_norm: True
