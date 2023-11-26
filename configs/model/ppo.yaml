@@ -8,12 +8,11 @@ policy_spec:
 actor_net_spec:
   depth: 2
   num_cells: 16
-  activation: relu
 value_net_spec:
   depth: 2
   num_cells: 64
-  activation: relu
 other_spec:
+  activation: relu
   gae_spec:
     gamma: 0.99
     lmbda: 0.95

@@ -1,23 +1,23 @@
 defaults:
   - _self_
   - data: ems.yaml
-  - model: ppo.yaml
+  - model: sac.yaml
 
 device:
   _target_: torch.device
   device: cpu
 
 wandb_log: True
-frames_per_batch: 2400
+frames_per_batch: 3600
 num_envs: 8
 update_rounds: 60
-batch_size: 512
+batch_size: 64
 buffer_size: 800000
-prb: False
+prb: True
 train_iter: 100
-actor_lr: 0.0005
-critic_lr: 0.0025
-schedule_lr: True
+actor_lr: 0.005
+critic_lr: 0.01
+schedule_lr: False
 schedule_factor: 0.9998
 max_grad_norm: 0.5
 eval_interval: 3

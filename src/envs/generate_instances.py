@@ -331,6 +331,7 @@ class MinSetCoverEnv(gymnasium.Env):
         self._num_sets = num_sets
         self._instances_filepath = instances_filepath
         self._seed = seed
+        random.seed(seed)
 
         # Load instances from file
         print('[MinSetCoverEnv] - Loading instances...')

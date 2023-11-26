@@ -1,22 +1,22 @@
 policy: td3
 policy_spec:
   gamma: 0.99
-  num_qvalue_nets: 2
+  num_qvalue_nets: 4
   policy_noise: 0.2
   noise_clip: 0.5
   delay_actor: True
   delay_qvalue: True
 actor_net_spec:
   depth: 2
-  num_cells: 8
+  num_cells: 32
   activation: relu
 value_net_spec:
   depth: 2
-  num_cells: 8
+  num_cells: 16
   activation: relu
 other_spec:
-  policy_delay_update: 2
-  init_random_frames: 100
-  target_update_polyak: 0.001
+  policy_delay_update: 4
+  init_random_frames: 1200
+  target_update_polyak: 0.01
   sampler:
     _target_: torchrl.data.replay_buffers.samplers.RandomSampler

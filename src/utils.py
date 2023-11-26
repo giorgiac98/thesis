@@ -136,7 +136,7 @@ def get_activation(act: str):
 def env_maker(problem: str,
               params: dict,
               device: torch.device,
-              *args):
+              **kwargs):
     assert problem in ['msc', 'ems'], f"Environment not implemented for {problem} problem"
     info_keys = ['optimal_cost']
     spec = [UnboundedContinuousTensorSpec(shape=torch.Size([1]), dtype=torch.float64)]
@@ -146,7 +146,7 @@ def env_maker(problem: str,
         c_grid = np.load(params['prices_filepath'])
         instance = params['instance']
 
-        def env_creator():
+        def env_creator(i_seed: int = 0):
             base_env, _, _ = make_env(f'unify-{params["method"]}',
                                       predictions.iloc[[instance]],
                                       shift,
@@ -162,17 +162,17 @@ def env_maker(problem: str,
         spec.append(UnboundedContinuousTensorSpec(shape=torch.Size([params['num_prods']]), dtype=torch.int64))
         spec.append(UnboundedContinuousTensorSpec(shape=torch.Size([params['num_prods']]), dtype=torch.float32))
 
-        def env_creator():
+        def env_creator(i_seed: int = 0):
             return MinSetCoverEnv(num_prods=params['num_prods'],
                                   num_sets=params['num_sets'],
                                   instances_filepath=params['data_path'],
-                                  seed=params['seed'])
+                                  seed=kwargs['seed'] ) # + i_seed
 
     else:
         raise NotImplementedError
 
-    def make_init_env(state_dict=None):
-        base_env = env_creator()
+    def make_init_env(state_dict=None, i_seed: int = 0):
+        base_env = env_creator(i_seed)
         torchrl_env = GymWrapper(base_env, device=device)
         torchrl_env = torchrl_env.set_info_dict_reader(
             default_info_dict_reader(info_keys, spec=spec)
@@ -204,8 +204,12 @@ def prepare_networks_and_policy(policy, policy_spec, other_spec, actor_net_spec,
                         device=device,
                         depth=actor_net_spec.depth,
                         num_cells=actor_net_spec.num_cells,
-                        activation_class=get_activation(actor_net_spec.activation))
-        torch.nn.init.uniform_(actor_net[-1].weight, -1e-3, 1e-3)
+                        activation_class=get_activation(other_spec.activation))
+        # Initialize policy weights
+        for layer in actor_net.modules():
+            if isinstance(layer, torch.nn.Linear):
+                torch.nn.init.orthogonal_(layer.weight, 1.0)
+                layer.bias.data.zero_()
         # Add state-independent normal scale
         actor_net = torch.nn.Sequential(
             actor_net,
@@ -227,7 +231,12 @@ def prepare_networks_and_policy(policy, policy_spec, other_spec, actor_net_spec,
                         device=device,
                         depth=value_net_spec.depth,
                         num_cells=value_net_spec.num_cells,
-                        activation_class=get_activation(value_net_spec.activation))
+                        activation_class=get_activation(other_spec.activation))
+        # Initialize value weights
+        for layer in value_net.modules():
+            if isinstance(layer, torch.nn.Linear):
+                torch.nn.init.orthogonal_(layer.weight, 0.01)
+                layer.bias.data.zero_()
         value_module = ValueOperator(
             module=value_net,
             in_keys=["observation"],
