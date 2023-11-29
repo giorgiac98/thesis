@@ -17,9 +17,9 @@ from torchrl.record.loggers.wandb import WandbLogger
 from tqdm import tqdm
 import wandb
 from envs.vpp_envs import make_env
-from envs.generate_instances import MinSetCoverEnv
+from envs.msc_env_utils import MinSetCoverEnv
 import matplotlib.pyplot as plt
-
+from omegaconf import open_dict
 
 def set_seeds(seed: int):
     import random
@@ -256,7 +256,7 @@ def prepare_networks_and_policy(policy, policy_spec, other_spec, actor_net_spec,
                                      device=device,
                                      depth=actor_net_spec.depth,
                                      num_cells=actor_net_spec.num_cells,
-                                     activation_class=get_activation(actor_net_spec.activation)))
+                                     activation_class=get_activation(other_spec.activation)))
         torch.nn.init.uniform_(net.operator[-1].weight, -1e-3, 1e-3)
         module = SafeModule(net, in_keys=["observation"], out_keys=["loc", "scale"])
 
@@ -280,7 +280,8 @@ def prepare_networks_and_policy(policy, policy_spec, other_spec, actor_net_spec,
                                            distribution_kwargs=dist_kwargs,
                                            default_interaction_type=InteractionType.RANDOM,
                                            )
-
+        with open_dict(value_net_spec):
+            value_net_spec.activation = other_spec.activation
         module = QValueModule(obs_spec=input_shape,
                               act_spec=n_action,
                               device=device,
@@ -297,7 +298,7 @@ def prepare_networks_and_policy(policy, policy_spec, other_spec, actor_net_spec,
                   device=device,
                   depth=actor_net_spec.depth,
                   num_cells=actor_net_spec.num_cells,
-                  activation_class=get_activation(actor_net_spec.activation))
+                  activation_class=get_activation(other_spec.activation))
         module = SafeModule(net, in_keys=["observation"], out_keys=["param"])
         min_ = problem_spec.low if 'low' in problem_spec else env_action_spec.space.minimum
         max_ = problem_spec.high if 'high' in problem_spec else env_action_spec.space.maximum
@@ -318,6 +319,8 @@ def prepare_networks_and_policy(policy, policy_spec, other_spec, actor_net_spec,
             # TODO testare e vedere come performa (magari si può usare ReLu piuttosto che Identity)
             policy_module = SafeSequential(module,
                                            TensorDictModule(nn.Identity(), in_keys=["param"], out_keys=["action"]))
+        with open_dict(value_net_spec):
+            value_net_spec.activation = other_spec.activation
         q_value_net = QValueModule(obs_spec=input_shape,
                                    act_spec=n_action,
                                    device=device,
@@ -398,9 +401,10 @@ def training_loop(cfg, policy_module, loss_module, other_modules, optim, collect
             if scheduler is not None:
                 scheduler.step()
 
+            eval_time = i % cfg.eval_interval == 0
             logs_str = train_logs(logger, logs, optim, pbar, tensordict_data, i,
-                                  do_log_step=i % cfg.eval_interval != 0)
-            if i % cfg.eval_interval == 0:
+                                  do_log_step=(not eval_time))
+            if eval_time:
                 eval_str = evaluate_policy(cfg, logger, logs, policy_module, test_env)
             pbar.set_description(", ".join([eval_str, *logs_str]))
 

@@ -7,12 +7,11 @@ policy_spec:
 actor_net_spec:
   depth: 2
   num_cells: 32
-  activation: relu
 value_net_spec:
   depth: 2
   num_cells: 64
-  activation: relu
 other_spec:
+  activation: relu
   alpha_lr: 0.003
   init_random_frames: 3600
   target_update_polyak: 0.005
