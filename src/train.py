@@ -48,10 +48,9 @@ def main(cfg: DictConfig):
         init_random_frames = cfg.model.other_spec.init_random_frames if 'init_random_frames' in cfg.model.other_spec else None
         collector = MultiSyncDataCollector(frames_per_batch=cfg.frames_per_batch,
                                            create_env_fn=[env_maker_function] * cfg.num_envs,
-                                           create_env_kwargs=[{'state_dict': env_state_dict, 'i_seed': i}
-                                                              for i in range(cfg.num_envs)],
+                                           create_env_kwargs=[{'state_dict': env_state_dict}] * cfg.num_envs,
                                            policy=exploration_policy,
-                                           #init_random_frames=init_random_frames,
+                                           init_random_frames=init_random_frames,
                                            total_frames=total_frames,
                                            device=device)
         collector.set_seed(cfg.seed)

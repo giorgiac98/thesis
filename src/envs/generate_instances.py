@@ -9,7 +9,6 @@ import gymnasium
 import numpy as np
 from tabulate import tabulate
 from gymnasium.spaces import Box
-import random
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 import copy
@@ -49,6 +48,7 @@ class MinSetCover:
     """
 
     def __init__(self,
+                 instance_id: int,
                  num_sets: int,
                  num_products: int,
                  density: float,
@@ -58,7 +58,7 @@ class MinSetCover:
                  prod_costs: np.ndarray = None,
                  observables: np.ndarray = None,
                  lmbds: np.ndarray = None):
-
+        self.instance_id = instance_id
         self._num_sets = num_sets
         self._num_products = num_products
         self._density = density
@@ -331,7 +331,7 @@ class MinSetCoverEnv(gymnasium.Env):
         self._num_sets = num_sets
         self._instances_filepath = instances_filepath
         self._seed = seed
-        random.seed(seed)
+        np.random.seed(seed)
 
         # Load instances from file
         print('[MinSetCoverEnv] - Loading instances...')
@@ -346,13 +346,30 @@ class MinSetCoverEnv(gymnasium.Env):
         self.action_space = Box(low=0, high=max_value, shape=(self._num_prods,), dtype=np.float32)
         self.observation_space = Box(low=0, high=np.inf, shape=(1,), dtype=np.float32)
 
-        # Split between training and test sets
-        self._train_instances, self._test_instances, \
-            train_demands, test_demands = \
-            train_test_split(instances, demands, test_size=test_split, random_state=seed)
+        split_file = os.path.join(self._instances_filepath, f'train_test_split_{seed}_{test_split}.pkl')
+        if os.path.exists(split_file):
+            split = pickle.load(open(split_file, 'rb'))
+            self._train_instances = []
+            self._test_instances = []
+            train_demands = []
+            for i in instances:
+                if i.instance_id in split['train']:
+                    self._train_instances.append(i)
+                    train_demands.append(i.demands)
+                else:
+                    self._test_instances.append(i)
+        else:
+            # Split between training and test sets
+            self._train_instances, self._test_instances, \
+                train_demands, test_demands = \
+                train_test_split(instances, demands, test_size=test_split, random_state=seed)
+            split = {'train': [inst.instance_id for inst in self._train_instances],
+                     'test': [inst.instance_id for inst in self._test_instances]}
+            pickle.dump(split, open(split_file, 'wb'))
 
         # Randomly select one of the instances
-        self._current_instance = random.sample(self._train_instances, k=1)[0]
+        super().reset(seed=seed)
+        self._current_instance = np.random.choice(self._train_instances)
         self._chosen_test_instances = None
         self._it_test_instances = None
 
@@ -368,6 +385,7 @@ class MinSetCoverEnv(gymnasium.Env):
         instances = dict()
 
         for f in os.listdir(self._instances_filepath):
+            instance_id = f.split('-')[-1]
             path = os.path.join(self._instances_filepath, f)
 
             if os.path.isdir(path):
@@ -376,7 +394,7 @@ class MinSetCoverEnv(gymnasium.Env):
                 assert os.path.exists(instance_path), "instance.pkl not found"
                 assert os.path.exists(optimal_cost_path), "optimal-cost.pkl not found"
 
-                instance = load_msc(instance_path)
+                instance = load_msc(instance_path, int(instance_id))
                 cost = pickle.load(open(optimal_cost_path, 'rb'))
                 instances[instance] = (instance.demands, cost)
 
@@ -416,7 +434,7 @@ class MinSetCoverEnv(gymnasium.Env):
         :return:
         """
         self._is_test = True
-        self._chosen_test_instances = random.sample(self._test_instances, k=num_test_instances)
+        self._chosen_test_instances = np.random.choice(self._test_instances, size=num_test_instances, replace=False)
         self._it_test_instances = cycle(self._chosen_test_instances)
         self.reset(self._seed)
 
@@ -427,12 +445,10 @@ class MinSetCoverEnv(gymnasium.Env):
         Reset the environment randomly selecting one of the instances.
         :return: numpy.array; the observations.
         """
-        seed = seed if seed is not None else self._seed
-        super().reset(seed=seed)
         if self._is_test:
             self._current_instance = next(self._it_test_instances)
         else:
-            self._current_instance = random.sample(self._train_instances, k=1)[0]
+            self._current_instance = np.random.choice(self._train_instances)
         observables = self._current_instance.observables
 
         # FIXME: this is useless for ndarray
@@ -612,14 +628,14 @@ def generate_training_and_test_sets(data_path: str,
 ########################################################################################################################
 
 
-def load_msc(filepath: str):
+def load_msc(filepath: str, instance_id: int):
     """
     For the sake of simplicity, we saved the only MSC attributes.
     :param filepath: str; where the MSC instances are loaded from.
     :return:
     """
     attributes = pickle.load(open(filepath, 'rb'))
-    msc = MinSetCover(**attributes)
+    msc = MinSetCover(**attributes, instance_id=instance_id)
     return msc
 
 

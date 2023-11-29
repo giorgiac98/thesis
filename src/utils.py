@@ -146,7 +146,7 @@ def env_maker(problem: str,
         c_grid = np.load(params['prices_filepath'])
         instance = params['instance']
 
-        def env_creator(i_seed: int = 0):
+        def env_creator():
             base_env, _, _ = make_env(f'unify-{params["method"]}',
                                       predictions.iloc[[instance]],
                                       shift,
@@ -162,17 +162,17 @@ def env_maker(problem: str,
         spec.append(UnboundedContinuousTensorSpec(shape=torch.Size([params['num_prods']]), dtype=torch.int64))
         spec.append(UnboundedContinuousTensorSpec(shape=torch.Size([params['num_prods']]), dtype=torch.float32))
 
-        def env_creator(i_seed: int = 0):
+        def env_creator():
             return MinSetCoverEnv(num_prods=params['num_prods'],
                                   num_sets=params['num_sets'],
                                   instances_filepath=params['data_path'],
-                                  seed=kwargs['seed'] ) # + i_seed
+                                  seed=kwargs['seed'])
 
     else:
         raise NotImplementedError
 
-    def make_init_env(state_dict=None, i_seed: int = 0):
-        base_env = env_creator(i_seed)
+    def make_init_env(state_dict=None):
+        base_env = env_creator()
         torchrl_env = GymWrapper(base_env, device=device)
         torchrl_env = torchrl_env.set_info_dict_reader(
             default_info_dict_reader(info_keys, spec=spec)
