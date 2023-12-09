@@ -1,3 +1,5 @@
+import shutil
+
 import hydra
 import torch
 from omegaconf import DictConfig, omegaconf
@@ -6,7 +8,7 @@ from torchrl.data import TensorDictReplayBuffer, LazyMemmapStorage
 from torchrl.data.replay_buffers import PrioritizedSampler
 
 from utils import env_maker, prepare_networks_and_policy, training_loop, MyWandbLogger, final_evaluation, set_seeds, \
-    define_metrics, make_optimizer
+    define_metrics, make_optimizer, get_dir_name
 
 
 @hydra.main(version_base=None, config_path="../configs", config_name="train")
@@ -60,17 +62,23 @@ def main(cfg: DictConfig):
         else:
             sampler = hydra.utils.instantiate(cfg.model.other_spec.sampler)
         replay_buffer = TensorDictReplayBuffer(storage=LazyMemmapStorage(
-                                                   buffer_size,
-                                                   scratch_dir='/tmp/',
-                                                   device=device,
-                                               ),
-                                               batch_size=cfg.batch_size,
-                                               sampler=sampler)
+            buffer_size,
+            scratch_dir='/tmp/',
+            device=device,
+        ),
+            batch_size=cfg.batch_size,
+            sampler=sampler)
         optim, scheduler = make_optimizer(cfg, loss_module)
         training_loop(cfg, policy_module, loss_module, other, optim, collector, replay_buffer, device, test_env,
                       logger=logger, scheduler=scheduler)
         # final evaluation and comparison with the optimal solution
         final_evaluation(cfg, logger, policy_module, test_env)
+
+        dir_name = get_dir_name(cfg, logger)
+        wandb_dir = dir_name[:-6] if 'files' in dir_name else dir_name
+        logger.experiment.finish()
+        print(f'Cleaning up {wandb_dir}')
+        shutil.rmtree(wandb_dir)
 
 
 if __name__ == "__main__":

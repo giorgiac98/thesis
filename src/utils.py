@@ -21,6 +21,7 @@ from envs.msc_env_utils import MinSetCoverEnv
 import matplotlib.pyplot as plt
 from omegaconf import open_dict
 
+
 def set_seeds(seed: int):
     import random
     random.seed(seed)
