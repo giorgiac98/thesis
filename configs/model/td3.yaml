@@ -1,18 +1,20 @@
 policy: td3
 policy_spec:
   gamma: 0.99
-  num_qvalue_nets: 4
+  num_qvalue_nets: 2
   policy_noise: 0.2
   noise_clip: 0.5
   delay_actor: True
   delay_qvalue: True
+  loss_function: l2
 actor_net_spec:
   depth: 2
-  num_cells: 32
+  num_cells: 8
 value_net_spec:
   depth: 2
-  num_cells: 16
+  num_cells: 8
 other_spec:
+  exploration_noise: 0.1
   activation: relu
   policy_delay_update: 4
   init_random_frames: 1200

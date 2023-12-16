@@ -332,7 +332,7 @@ def prepare_networks_and_policy(policy, policy_spec, other_spec, actor_net_spec,
             sigma_init=1,
             sigma_end=1,
             mean=0,
-            std=0.1,
+            std=other_spec.exploration_noise,
             safe=False,
         ).to(device)
         loss_module = TD3Loss(
@@ -372,7 +372,8 @@ def make_optimizer(cfg, loss_module):
     else:
         actor_params = list(loss_module.actor_network_params.flatten_keys().values())
         critic_params = list(loss_module.qvalue_network_params.flatten_keys().values())
-        optimizer_actor = torch.optim.Adam(actor_params, lr=cfg.actor_lr)
+        wd = cfg.weight_decay if not cfg.data.problem_spec.use_tanh else 0
+        optimizer_actor = torch.optim.Adam(actor_params, lr=cfg.actor_lr, weight_decay=wd)
         optimizer_critic = torch.optim.Adam(critic_params, lr=cfg.critic_lr)
         optim = (optimizer_actor, optimizer_critic)
         scheduler = [torch.optim.lr_scheduler.MultiplicativeLR(op, lr_lambda=lambda _: cfg.schedule_factor)
