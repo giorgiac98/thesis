@@ -9,15 +9,15 @@ policy_spec:
   loss_function: l2
 actor_net_spec:
   depth: 2
-  num_cells: 8
+  num_cells: [64, 8]
 value_net_spec:
   depth: 2
   num_cells: 8
 other_spec:
-  exploration_noise: 0.1
+  exploration_noise: 0.5
   activation: relu
   policy_delay_update: 4
-  init_random_frames: 1200
+  init_random_frames: 6000
   target_update_polyak: 0.01
   sampler:
     _target_: torchrl.data.replay_buffers.samplers.RandomSampler

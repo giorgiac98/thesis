@@ -8,15 +8,15 @@ device:
   device: cpu
 
 wandb_log: True
-frames_per_batch: 2400
-num_envs: 4
-update_rounds: 20
+frames_per_batch: 1200
+num_envs: 2
+update_rounds: 10
 batch_size: 128
 buffer_size: 800000
 prb: False
 train_iter: 100
-actor_lr: 0.0005
-critic_lr: 0.0005
+actor_lr: 0.001
+critic_lr: 0.008
 schedule_lr: True
 schedule_factor: 0.9998
 weight_decay: 0.1
