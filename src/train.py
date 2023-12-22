@@ -76,7 +76,8 @@ def main(cfg: DictConfig):
 
         dir_name = get_dir_name(cfg, logger)
         wandb_dir = dir_name[:-6] if 'files' in dir_name else dir_name
-        logger.experiment.finish()
+        if logger is not None:
+            logger.experiment.finish()
         print(f'Cleaning up {wandb_dir}')
         shutil.rmtree(wandb_dir)
 

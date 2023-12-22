@@ -372,8 +372,7 @@ def make_optimizer(cfg, loss_module):
     else:
         actor_params = list(loss_module.actor_network_params.flatten_keys().values())
         critic_params = list(loss_module.qvalue_network_params.flatten_keys().values())
-        wd = cfg.weight_decay if not cfg.data.problem_spec.use_tanh else 0
-        optimizer_actor = torch.optim.Adam(actor_params, lr=cfg.actor_lr, weight_decay=wd)
+        optimizer_actor = torch.optim.Adam(actor_params, lr=cfg.actor_lr, weight_decay=cfg.weight_decay)
         optimizer_critic = torch.optim.Adam(critic_params, lr=cfg.critic_lr)
         optim = (optimizer_actor, optimizer_critic)
         scheduler = [torch.optim.lr_scheduler.MultiplicativeLR(op, lr_lambda=lambda _: cfg.schedule_factor)
@@ -459,6 +458,8 @@ def compute_td3_loss(cfg, logger, logs, loss_module, optim, sampled_tensordict, 
     # Update critic
     optimizer_critic.zero_grad()
     q_loss.backward()
+    q_clipped_norm = torch.nn.utils.clip_grad_norm_(loss_module.qvalue_network_params.flatten_keys().values(),
+                                                    cfg.max_grad_norm)
     optimizer_critic.step()
     # TODO this is a bug fix for the TD3 implementation, tell torchrl
     sampled_tensordict = sampled_tensordict.set('td_error', q_metadata['td_error'].detach().max(0)[0])
@@ -468,16 +469,18 @@ def compute_td3_loss(cfg, logger, logs, loss_module, optim, sampled_tensordict, 
         actor_loss, a_metadata = loss_module.actor_loss(sampled_tensordict)
         optimizer_actor.zero_grad()
         actor_loss.backward()
+        a_clipped_norm = torch.nn.utils.clip_grad_norm_(loss_module.actor_network_params.flatten_keys().values(),
+                                                        cfg.max_grad_norm)
         optimizer_actor.step()
 
         # Update target params
         target_net_updater.step()
         if logger is not None:
-            logger.log(do_log_step=False, prefix="train", loss_actor=actor_loss.item(),
+            logger.log(do_log_step=False, prefix="train", loss_actor=actor_loss.item(), a_grad_norm=a_clipped_norm,
                        actor_updates=logs['actor_updates'])
             logger.log(do_log_step=False, prefix="debug", **a_metadata)
     if logger is not None:
-        logger.log(do_log_step=False, prefix="train", loss_critic=q_loss.item(),
+        logger.log(do_log_step=False, prefix="train", loss_critic=q_loss.item(), q_grad_norm=q_clipped_norm,
                    updates=logs['updates'])
         logger.log(prefix="debug", **q_metadata)
     return sampled_tensordict
