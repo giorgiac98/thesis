@@ -21,6 +21,22 @@ from typing import Tuple, List, Union, Any
 TIMESTEP_IN_A_DAY = 96
 
 
+def timestamps_headers(num_timeunits: int) -> List[str]:
+    """
+    Given a number of timeunits (in minutes), it provides a string representation of each timeunit.
+    For example, if num_timeunits=96, the result is [00:00, 00:15, 00:30, ...].
+    :param num_timeunits: int; the number of timeunits in a day.
+    :return: list of string; list of timeunits.
+    """
+
+    start_time = datetime.strptime('00:00', '%H:%M')
+    timeunit = 24 * 60 / num_timeunits
+    timestamps = [start_time + idx * timedelta(minutes=timeunit) for idx in range(num_timeunits)]
+    timestamps = ['{:02d}:{:02d}'.format(timestamp.hour, timestamp.minute) for timestamp in timestamps]
+
+    return timestamps
+
+
 def instances_preprocessing(instances: pd.DataFrame) -> pd.DataFrame:
     """
     Convert PV and Load values from string to float.
@@ -213,22 +229,6 @@ class VPPEnv(Env):
             return False
 
         return True
-
-    @staticmethod
-    def timestamps_headers(num_timeunits: int) -> List[str]:
-        """
-        Given a number of timeunits (in minutes), it provides a string representation of each timeunit.
-        For example, if num_timeunits=96, the result is [00:00, 00:15, 00:30, ...].
-        :param num_timeunits: int; the number of timeunits in a day.
-        :return: list of string; list of timeunits.
-        """
-
-        start_time = datetime.strptime('00:00', '%H:%M')
-        timeunit = 24 * 60 / num_timeunits
-        timestamps = [start_time + idx * timedelta(minutes=timeunit) for idx in range(num_timeunits)]
-        timestamps = ['{:02d}:{:02d}'.format(timestamp.hour, timestamp.minute) for timestamp in timestamps]
-
-        return timestamps
 
     @staticmethod
     def min_max_scaler(starting_range: Union[Tuple[float, float], Tuple[int, int]],

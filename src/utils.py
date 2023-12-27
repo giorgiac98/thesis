@@ -317,7 +317,6 @@ def prepare_networks_and_policy(policy, policy_spec, other_spec, actor_net_spec,
                 ),
             )
         else:
-            # TODO testare e vedere come performa (magari si può usare ReLu piuttosto che Identity)
             policy_module = SafeSequential(module,
                                            TensorDictModule(nn.Identity(), in_keys=["param"], out_keys=["action"]))
         with open_dict(value_net_spec):
