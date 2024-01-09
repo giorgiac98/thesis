@@ -2,7 +2,7 @@ policy: ppo
 policy_spec:
   clip_epsilon: 0.2
   entropy_coef: 0.
-  critic_coef: 0.75
+  critic_coef: 0.5
   gamma: 0.99
   loss_critic_type: smooth_l1
 actor_net_spec:

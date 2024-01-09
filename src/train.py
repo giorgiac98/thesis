@@ -22,11 +22,17 @@ def main(cfg: DictConfig):
             cfg.frames_per_batch = cfg.num_envs * (cfg.frames_per_batch // cfg.num_envs)
         wandb_cfg = omegaconf.OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True)
         wandb_params = dict(config=wandb_cfg,
-                            project="thesis-experiments",
+                            project="thesis",
                             group=cfg.data.problem,
                             tags=[cfg.data.problem, cfg.model.policy])
         if cfg.data.problem == 'ems':
-            wandb_params['tags'] += [str(cfg.data.params.instance), cfg.data.params.method]
+            len_instances = len(cfg.data.params.instances)
+            if len_instances == 1:
+                wandb_params['tags'] += [str(cfg.data.params.instances[0])]
+            else:
+                wandb_params['tags'] += [', '.join(map(lambda x: str(x), cfg.data.params.instances))]
+            wandb_params['tags'] += [f'{len_instances} instance' + ('s' if len_instances > 1 else ''),
+                                     cfg.data.params.method]
         else:
             wandb_params['tags'] += [f'{cfg.data.params.num_prods} prods x {cfg.data.params.num_sets} sets',
                                      f'{cfg.data.params.num_instances} instances']
@@ -35,10 +41,9 @@ def main(cfg: DictConfig):
             define_metrics(cfg, logger)
         env_maker_function = env_maker(cfg.data.problem, cfg.data.params, device=device, seed=cfg.seed)
 
-        test_env = env_maker_function()
-        test_env.set_as_test(cfg.eval_rollouts)
-        env_state_dict = test_env.transform[0].state_dict()
-        env_action_spec, env_obs_spec = test_env.action_spec, test_env.observation_spec
+        garbage_env = env_maker_function()
+        env_state_dict = garbage_env.transform[0].state_dict()
+        env_action_spec, env_obs_spec = garbage_env.action_spec, garbage_env.observation_spec
         policy_module, loss_module, other = prepare_networks_and_policy(**cfg.model,
                                                                         device=device,
                                                                         problem_spec=cfg.data.problem_spec,
@@ -69,9 +74,12 @@ def main(cfg: DictConfig):
             batch_size=cfg.batch_size,
             sampler=sampler)
         optim, scheduler = make_optimizer(cfg, loss_module)
-        training_loop(cfg, policy_module, loss_module, other, optim, collector, replay_buffer, device, test_env,
+        valid_env = env_maker_function(state_dict=env_state_dict, env_type='valid', num_test_instances=cfg.eval_rollouts)
+        training_loop(cfg, policy_module, loss_module, other, optim, collector, replay_buffer, device, valid_env,
                       logger=logger, scheduler=scheduler)
+
         # final evaluation and comparison with the optimal solution
+        test_env = env_maker_function(state_dict=env_state_dict, env_type='test', num_test_instances=cfg.test_rollouts)
         final_evaluation(cfg, logger, policy_module, test_env)
 
         dir_name = get_dir_name(cfg, logger)

@@ -1,8 +1,10 @@
 import os
+import pickle
 
 import numpy as np
 import pandas as pd
 import torch
+from sklearn.model_selection import train_test_split
 from tensordict.nn import TensorDictModule, InteractionType, AddStateIndependentNormalScale
 from torch import nn
 from torchrl.data import UnboundedContinuousTensorSpec
@@ -17,9 +19,9 @@ from torchrl.record.loggers.wandb import WandbLogger
 from tqdm import tqdm
 import wandb
 from envs.vpp_envs import make_env
-from envs.msc_env_utils import MinSetCoverEnv
+from envs.msc_env_utils import MinSetCoverEnv, load_instances
 import matplotlib.pyplot as plt
-from omegaconf import open_dict
+from omegaconf import open_dict, OmegaConf
 
 
 def set_seeds(seed: int):
@@ -138,42 +140,77 @@ def env_maker(problem: str,
               params: dict,
               device: torch.device,
               **kwargs):
+    OmegaConf.resolve(params)
     assert problem in ['msc', 'ems'], f"Environment not implemented for {problem} problem"
     info_keys = ['optimal_cost']
     spec = [UnboundedContinuousTensorSpec(shape=torch.Size([1]), dtype=torch.float64)]
-    if problem == 'ems':
-        predictions = pd.read_csv(params['predictions_filepath'])
-        shift = np.load(params['shifts_filepath'])
-        c_grid = np.load(params['prices_filepath'])
-        instance = params['instance']
 
-        def env_creator():
+    def env_creator(env_type='train', num_test_instances=None):
+        if problem == 'ems':
+            predictions = pd.read_csv(params['predictions_filepath'])
+            shift = np.load(params['shifts_filepath'])
+            c_grid = np.load(params['prices_filepath'])
+
+            instances = params['instances']
+            if env_type != 'train':
+                len_valid = len(params['validation_instances'])
+                len_test = len(params['test_instances'])
+                if num_test_instances is None:
+                    num_test_instances = len_valid if env_type == 'valid' else len_test
+                assert num_test_instances == len_test or num_test_instances == len_valid
+                instances = params['validation_instances'] if env_type == 'valid' else params['test_instances']
             base_env, _, _ = make_env(f'unify-{params["method"]}',
-                                      predictions.iloc[[instance]],
+                                      predictions.iloc[instances],
                                       shift,
                                       c_grid,
-                                      params['noise_std_dev'])
+                                      params['noise_std_dev'],
+                                      is_test=env_type != 'train')
             return base_env
 
-    elif problem == 'msc':
-        # do not remove this line, in this way hydra resolves the path only once
-        params['data_path'] = params['data_path']
-        info_keys.append('demands')
-        info_keys.append('mod_action')
-        spec.append(UnboundedContinuousTensorSpec(shape=torch.Size([params['num_prods']]), dtype=torch.int64))
-        spec.append(UnboundedContinuousTensorSpec(shape=torch.Size([params['num_prods']]), dtype=torch.float32))
+        elif problem == 'msc':
+            seed = kwargs['seed']
+            test_split = params['test_split']
+            info_keys.append('demands')
+            info_keys.append('mod_action')
+            spec.append(UnboundedContinuousTensorSpec(shape=torch.Size([params['num_prods']]), dtype=torch.int64))
+            spec.append(UnboundedContinuousTensorSpec(shape=torch.Size([params['num_prods']]), dtype=torch.float32))
 
-        def env_creator():
+            data = load_instances(params['data_path'])
+            split_file = os.path.join(params['data_path'], f'train_test_split_{seed}_{test_split}.pkl')
+            if os.path.exists(split_file):
+                split = pickle.load(open(split_file, 'rb'))
+                train_instances = []
+                test_instances = []
+                for i in data.keys():
+                    if i.instance_id in split['train']:
+                        train_instances.append(i)
+                    else:
+                        test_instances.append(i)
+            else:
+                # Split between training and test sets
+                instances = list(data.keys())
+                demands = [i.demands for i in instances]
+                train_instances, test_instances, \
+                    train_demands, test_demands = \
+                    train_test_split(instances, demands, test_size=test_split, random_state=seed)
+                split = {'train': [inst.instance_id for inst in train_instances],
+                         'test': [inst.instance_id for inst in test_instances]}
+                pickle.dump(split, open(split_file, 'wb'))
+
+            instances = train_instances if env_type == 'train' else test_instances
             return MinSetCoverEnv(num_prods=params['num_prods'],
                                   num_sets=params['num_sets'],
-                                  instances_filepath=params['data_path'],
-                                  seed=kwargs['seed'])
+                                  data={i: data[i] for i in instances},
+                                  seed=kwargs['seed'],
+                                  is_test=env_type != 'train',
+                                  num_test_instances=num_test_instances)
 
-    else:
-        raise NotImplementedError
+        else:
+            raise NotImplementedError
 
-    def make_init_env(state_dict=None):
-        base_env = env_creator()
+    def make_init_env(state_dict=None, env_type='train', num_test_instances=None):
+        assert env_type in ['train', 'valid', 'test'], f"env_type {env_type} not implemented"
+        base_env = env_creator(env_type=env_type, num_test_instances=num_test_instances)
         torchrl_env = GymWrapper(base_env, device=device)
         torchrl_env = torchrl_env.set_info_dict_reader(
             default_info_dict_reader(info_keys, spec=spec)
@@ -189,7 +226,7 @@ def env_maker(problem: str,
                 e.transform[0].init_stats(num_iter=3, reduce_dim=0, cat_dim=0)
                 e.transform[0].load_state_dict(state_dict)
             else:
-                e.transform[0].init_stats(num_iter=500, reduce_dim=0, cat_dim=0)
+                e.transform[0].init_stats(num_iter=2000, reduce_dim=0, cat_dim=0)
         check_env_specs(e)
         return e
 
@@ -405,7 +442,7 @@ def training_loop(cfg, policy_module, loss_module, other_modules, optim, collect
             logs_str = train_logs(logger, logs, optim, pbar, tensordict_data, i,
                                   do_log_step=(not eval_time))
             if eval_time:
-                eval_str = evaluate_policy(cfg, logger, logs, policy_module, test_env)
+                eval_str = evaluate_policy(cfg, logger, logs, policy_module, test_env, cfg.eval_rollouts)
             pbar.set_description(", ".join([eval_str, *logs_str]))
 
     else:
@@ -441,7 +478,7 @@ def training_loop(cfg, policy_module, loss_module, other_modules, optim, collect
             logs_str = train_logs(logger, logs, optim, pbar, tensordict_data, i,
                                   do_log_step=i % cfg.eval_interval != 0)
             if i % cfg.eval_interval == 0:
-                eval_str = evaluate_policy(cfg, logger, logs, policy_module, test_env)
+                eval_str = evaluate_policy(cfg, logger, logs, policy_module, test_env, cfg.eval_rollouts)
             pbar.set_description(", ".join([eval_str, *logs_str]))
 
     collector.shutdown()
@@ -542,11 +579,11 @@ def compute_loss(cfg, device, logs, logger, loss_module, optim, subdata):
         logger.log(prefix="debug", **{key: loss for key, loss in loss_vals.items() if not key.startswith("loss_")})
 
 
-def eval_and_log(cfg, logger, policy_module, test_env, prefix='eval'):
+def eval_and_log(cfg, logger, policy_module, test_env, num_eval_rollouts, prefix='eval'):
     with set_exploration_type(ExplorationType.MEAN), torch.no_grad():
         # execute rollouts with the trained policy
         eval_rollouts = torch.stack([test_env.rollout(cfg.eval_rollout_steps, policy_module)
-                                     for _ in range(cfg.eval_rollouts)])
+                                     for _ in range(num_eval_rollouts)])
     episode_rewards = eval_rollouts[('next', 'episode_reward')][:, -1]
     optimal_values = eval_rollouts[('next', 'optimal_cost')][:, -1]
     optimalities = - optimal_values / episode_rewards
@@ -559,10 +596,10 @@ def eval_and_log(cfg, logger, policy_module, test_env, prefix='eval'):
             logger.log(do_log_step=False, prefix=prefix, regret=regrets.mean().item(),
                        regret_std=regrets.std().item(),
                        regret_values=wandb.Histogram(np_histogram=np.histogram(regrets)))
-            action = eval_rollouts[('next', 'mod_action')].reshape(cfg.eval_rollouts,
+            action = eval_rollouts[('next', 'mod_action')].reshape(num_eval_rollouts,
                                                                    test_env.action_space.shape[0])
         else:
-            action = eval_rollouts['action'].reshape(cfg.eval_rollouts, test_env.n)
+            action = eval_rollouts['action'].reshape(num_eval_rollouts, test_env.n)
         logger.log(prefix=prefix, episode_reward=episode_reward, optimality=optimality,
                    episode_reward_std=episode_rewards.std(), optimality_std=optimalities.std(),
                    episode_reward_values=wandb.Histogram(
@@ -576,8 +613,8 @@ def eval_and_log(cfg, logger, policy_module, test_env, prefix='eval'):
             'eval_rollouts': eval_rollouts}
 
 
-def evaluate_policy(cfg, logger, logs, policy_module, test_env):
-    info = eval_and_log(cfg, logger, policy_module, test_env)
+def evaluate_policy(cfg, logger, logs, policy_module, test_env, num_eval_rollouts):
+    info = eval_and_log(cfg, logger, policy_module, test_env, num_eval_rollouts)
     episode_reward, optimality = info['episode_reward'], info['optimality']
     logs["eval optimality"].append(optimality)
     logs["eval reward (sum)"].append(episode_reward)
@@ -610,11 +647,11 @@ def final_evaluation(cfg, logger, policy_module, test_env, test_dir=None):
     policy_module.load_state_dict(torch.load(f'{dir_name}/{name}'))
     policy_module.eval()  # might not be necessary
 
-    info = eval_and_log(cfg, logger, policy_module, test_env, prefix='final_eval_stats')
+    info = eval_and_log(cfg, logger, policy_module, test_env, cfg.test_rollouts, prefix='final_eval_stats')
 
     if cfg.data.problem == 'ems':
         test_solution = test_env.history
-        optimal_solution_df = test_env.optimal_solution
+        optimal_solution_df = test_env.optimal_solutions[test_env.current_instance]
         axes = optimal_solution_df.plot(subplots=True, fontsize=12, figsize=(10, 7))
         plt.xlabel('Timestamp', fontsize=14)
 
@@ -640,7 +677,8 @@ def final_evaluation(cfg, logger, policy_module, test_env, test_dir=None):
                                            title="C_virt Actions")
             last_episode_reward = info['episode_rewards'][-1].item()
             last_optimality = info['optimalities'][-1].item()
-            logger.log(prefix='final_eval', episode_reward=last_episode_reward, optimality=last_optimality, **d,
+            logger.log(prefix='final_eval', instance=test_env.current_instance, episode_reward=last_episode_reward,
+                       optimality=last_optimality, **d,
                        opt_chart=axes[0].get_figure(), opt_chart_data=wandb.Table(dataframe=optimal_solution_df))
     else:  # msc
         if logger is not None:

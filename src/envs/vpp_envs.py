@@ -2,6 +2,7 @@
     Single step and MDP version of the VPP environments.
 """
 from datetime import datetime, timedelta
+from itertools import cycle
 
 from gymnasium import Env
 from gymnasium.spaces import Box
@@ -75,7 +76,8 @@ class VPPEnv(Env):
                  c_grid,
                  shift,
                  noise_std_dev=0.02,
-                 savepath=None):
+                 savepath=None,
+                 is_test=False):
         """
         :param predictions: pandas.Dataframe; predicted PV and Load.
         :param c_grid: numpy.array; c_grid values.
@@ -83,13 +85,11 @@ class VPPEnv(Env):
         :param noise_std_dev: float; the standard deviation of the additive gaussian noise for the realizations.
         :param savepath: string; if not None, the gurobi models are saved to this directory.
         """
-        self._is_test = False
+        self._is_test = is_test
         # Set numpy random seed to ensure reproducibility
-        np.random.seed(0)
-
+        super().reset(seed=0)
         # Number of timesteps in one day
         self.n = 96
-
         # Standard deviation of the additive gaussian noise
         self.noise_std_dev = noise_std_dev
 
@@ -103,8 +103,18 @@ class VPPEnv(Env):
         self.c_diesel = 0.054
         self.p_diesel_max = 1200
 
-        # We randomly choose an instance
-        self.mr = random.randint(self.predictions.index.min(), self.predictions.index.max())
+        if self._is_test:
+            self.noise = dict()
+            for i in self.predictions.index:
+                rng = np.random.default_rng(i)
+                self.noise[i] = (rng.normal(0, self.noise_std_dev, self.n),
+                                 rng.normal(0, self.noise_std_dev, self.n))
+
+            self._it_instance = cycle(self.predictions.index)
+            self.current_instance = next(self._it_instance)
+        else:
+            self.noise = None
+            self.current_instance = self._np_random.choice(self.predictions.index, shuffle=False)
 
         self.savepath = savepath
 
@@ -113,8 +123,11 @@ class VPPEnv(Env):
 
     def _load_optimal_values(self):
         data_dir = 'envs/ems_data/oracle'
-        self.optimal_solution = pd.read_csv(f'{data_dir}/{self.mr}_solution.csv', index_col=0)
-        self.optimal_cost = np.load(f'{data_dir}/{self.mr}_cost.npy')
+        self.optimal_solutions = dict()
+        self.optimal_costs = dict()
+        for idx in self.predictions.index:
+            self.optimal_solutions[idx] = pd.read_csv(f'{data_dir}/{idx}_solution.csv', index_col=0)
+            self.optimal_costs[idx] = np.load(f'{data_dir}/{idx}_cost.npy')
 
     def _create_instance_variables(self):
         """
@@ -122,30 +135,26 @@ class VPPEnv(Env):
         :return:
         """
 
-        assert self.mr is not None, "Instance index must be initialized"
+        assert self.current_instance is not None, "Instance index must be initialized"
 
         # predicted PV for the current instance
-        self.p_ren_pv_pred = self.predictions['PV(kW)'][self.mr]
+        self.p_ren_pv_pred = self.predictions['PV(kW)'][self.current_instance]
         self.p_ren_pv_pred = np.asarray(self.p_ren_pv_pred)
 
         # predicted Load for the current instance
-        self.tot_cons_pred = self.predictions['Load(kW)'][self.mr]
+        self.tot_cons_pred = self.predictions['Load(kW)'][self.current_instance]
         self.tot_cons_pred = np.asarray(self.tot_cons_pred)
 
+        if self.noise is None:
+            noise_pv = self._np_random.normal(0, self.noise_std_dev, self.n)
+            noise_load = self._np_random.normal(0, self.noise_std_dev, self.n)
+        else:
+            noise_pv, noise_load = self.noise[self.current_instance]
+
         # The real PV for the current instance is computed adding noise to the predictions
-        noise = np.random.normal(0, self.noise_std_dev, self.n)
-        self.p_ren_pv_real = self.p_ren_pv_pred + self.p_ren_pv_pred * noise
-
+        self.p_ren_pv_real = self.p_ren_pv_pred + self.p_ren_pv_pred * noise_pv
         # The real Load for the current instance is computed adding noise to the predictions
-        noise = np.random.normal(0, self.noise_std_dev, self.n)
-        self.tot_cons_real = self.tot_cons_pred + self.tot_cons_pred * noise
-
-    def set_as_test(self, num_test_instances: int = 10):
-        """
-        Set the env as test env and use the test_instances.
-        :return:
-        """
-        self._is_test = True
+        self.tot_cons_real = self.tot_cons_pred + self.tot_cons_pred * noise_load
 
     def step(self, action: np.array):
         """
@@ -175,10 +184,14 @@ class VPPEnv(Env):
         super().reset(seed=seed)
         self._clear()
 
-        # We randomly choose an instance
-        self.mr = random.randint(self.predictions.index.min(), self.predictions.index.max())
+        # We choose an instance
+        if self._is_test:
+            self.current_instance = next(self._it_instance)
+        else:
+            self.current_instance = self._np_random.choice(self.predictions.index, shuffle=False)
+
         self._create_instance_variables()
-        return self._get_observations(), {'optimal_cost': [self.optimal_cost]}
+        return self._get_observations(), {'optimal_cost': [self.optimal_costs[self.current_instance]]}
 
     def render(self, mode: str = 'ascii'):
         """
@@ -186,7 +199,7 @@ class VPPEnv(Env):
         :return:
         """
 
-        timestamps = VPPEnv.timestamps_headers(self.n)
+        timestamps = timestamps_headers(self.n)
         print('\nPredicted PV(kW)')
         print(tabulate(np.expand_dims(self.p_ren_pv_pred, axis=0), headers=timestamps, tablefmt='pretty'))
         print('\nPredicted Load(kW)')
@@ -276,7 +289,8 @@ class SingleStepVPPEnv(VPPEnv):
                  c_grid,
                  shift,
                  noise_std_dev=0.02,
-                 savepath=None):
+                 savepath=None,
+                 is_test=False):
         """
         :param predictions: pandas.Dataframe; predicted PV and Load.
         :param c_grid: numpy.array; c_grid values.
@@ -285,7 +299,7 @@ class SingleStepVPPEnv(VPPEnv):
         :param savepath: string; if not None, the gurobi models are saved to this directory.
         """
 
-        super(SingleStepVPPEnv, self).__init__(predictions, c_grid, shift, noise_std_dev, savepath)
+        super(SingleStepVPPEnv, self).__init__(predictions, c_grid, shift, noise_std_dev, savepath, is_test)
 
         # Here we define the observation and action spaces
         self.observation_space = Box(low=0, high=np.inf, shape=(self.n * 2,), dtype=np.float32)
@@ -298,10 +312,7 @@ class SingleStepVPPEnv(VPPEnv):
         Return predicted pv and load values as a single array.
         :return: numpy.array; pv and load values for the current instance.
         """
-
-        observations = np.concatenate((self.p_ren_pv_pred / np.max(self.p_ren_pv_pred),
-                                       self.tot_cons_pred / np.max(self.tot_cons_pred)),
-                                      axis=0)
+        observations = np.concatenate((self.p_ren_pv_pred, self.tot_cons_pred), axis=0)
         observations = np.squeeze(observations)
 
         return observations
@@ -315,7 +326,7 @@ class SingleStepVPPEnv(VPPEnv):
         self.p_ren_pv_real = None
         self.tot_cons_pred = None
         self.tot_cons_real = None
-        self.mr = None
+        self.current_instance = None
         self.history = {'c_virt': [], 'energy_bought': [], 'energy_sold': [], 'diesel_power': [],
                         'input_storage': [], 'output_storage': [], 'storage_capacity': []}
 
@@ -328,7 +339,7 @@ class SingleStepVPPEnv(VPPEnv):
         """
 
         # Check variables initialization
-        assert self.mr is not None, "Instance index must be initialized"
+        assert self.current_instance is not None, "Instance index must be initialized"
         assert self.c_grid is not None, "c_grid must be initialized"
         assert self.shift is not None, "shifts must be initialized before the step function"
         assert self.p_ren_pv_real is not None, "Real PV values must be initialized before the step function"
@@ -451,7 +462,8 @@ class SingleStepVPPEnv(VPPEnv):
         observations = self._get_observations()
 
         return observations, reward, terminated, truncated, {'feasible': feasible, 'true cost': -reward,
-                                                             'optimal_cost': [self.optimal_cost]}
+                                                             'optimal_cost': [
+                                                                 self.optimal_costs[self.current_instance]]}
 
 
 ########################################################################################################################
@@ -472,7 +484,8 @@ class MarkovianVPPEnv(VPPEnv):
                  c_grid,
                  shift,
                  noise_std_dev=0.02,
-                 savepath=None):
+                 savepath=None,
+                 is_test=False):
         """
         :param predictions: pandas.Dataframe; predicted PV and Load.
         :param c_grid: numpy.array; c_grid values.
@@ -481,7 +494,7 @@ class MarkovianVPPEnv(VPPEnv):
         :param savepath: string; if not None, the gurobi models are saved to this directory.
         """
 
-        super(MarkovianVPPEnv, self).__init__(predictions, c_grid, shift, noise_std_dev, savepath)
+        super(MarkovianVPPEnv, self).__init__(predictions, c_grid, shift, noise_std_dev, savepath, is_test)
 
         # Here we define the observation and action spaces
         self.observation_space = Box(low=-np.inf, high=np.inf, shape=(self.n * 3 + 2,), dtype=np.float32)
@@ -495,7 +508,7 @@ class MarkovianVPPEnv(VPPEnv):
         :return:
         """
 
-        assert self.mr is not None, "Instance index must be initialized"
+        assert self.current_instance is not None, "Instance index must be initialized"
 
         super()._create_instance_variables()
 
@@ -530,7 +543,7 @@ class MarkovianVPPEnv(VPPEnv):
         self.p_ren_pv_real = None
         self.tot_cons_pred = None
         self.tot_cons_real = None
-        self.mr = None
+        self.current_instance = None
         self.storage = self.in_cap
         self.timestep = 0
         self.cumulative_cost = 0
@@ -546,7 +559,7 @@ class MarkovianVPPEnv(VPPEnv):
         """
 
         # Check variables initialization
-        assert self.mr is not None, "Instance index must be initialized"
+        assert self.current_instance is not None, "Instance index must be initialized"
         assert self.c_grid is not None, "c_grid must be initialized"
         assert self.shift is not None, "shifts must be initialized before the step function"
         assert self.p_ren_pv_real is not None, "Real PV values must be initialized before the step function"
@@ -654,15 +667,9 @@ class MarkovianVPPEnv(VPPEnv):
         assert self.timestep <= self.n, f"Timestep cannot be greater than {self.n}"
         terminated = (self.timestep == self.n)
         truncated = not feasible
-        # done = False
-        # if self.timestep == self.n or not feasible:
-        #     done = True
-        # elif self.timestep < self.n:
-        #     done = False
-        # else:
-        #     raise Exception(f"Timestep cannot be greater than {self.n}")
         return observations, reward, terminated, truncated, {'feasible': feasible, 'true cost': self.cumulative_cost,
-                                                             'optimal_cost': [self.optimal_cost]}
+                                                             'optimal_cost': [
+                                                                 self.optimal_costs[self.current_instance]]}
 
 
 ########################################################################################################################
@@ -671,7 +678,8 @@ def make_env(method,
              predictions,
              shift,
              c_grid,
-             noise_std_dev):
+             noise_std_dev,
+             is_test=False):
     # Set episode length and discount factor for single-step and MDP version
     if 'sequential' in method:
         max_episode_length = TIMESTEP_IN_A_DAY
@@ -688,7 +696,8 @@ def make_env(method,
                               shift=shift,
                               c_grid=c_grid,
                               noise_std_dev=noise_std_dev,
-                              savepath=None)
+                              savepath=None,
+                              is_test=is_test)
 
         # Garage wrapping of a gym environment
         # env = GymEnv(env, max_episode_length=max_episode_length)
@@ -699,7 +708,8 @@ def make_env(method,
                                shift=shift,
                                c_grid=c_grid,
                                noise_std_dev=noise_std_dev,
-                               savepath=None)
+                               savepath=None,
+                               is_test=is_test)
 
         # Garage wrapping of a gym environment
         # env = GymEnv(env, max_episode_length=max_episode_length)

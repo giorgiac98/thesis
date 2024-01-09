@@ -264,7 +264,7 @@ class StochasticMinSetCover(MinSetCover):
                  num_sets: int,
                  num_products: int,
                  density: float,
-                 observable_lambda_fun: Callable,
+                 observable_lambda_fun: List[Callable],
                  availability: np.ndarray = None,
                  demands: np.ndarray = None,
                  set_costs: np.ndarray = None,
@@ -299,6 +299,28 @@ class StochasticMinSetCover(MinSetCover):
 
 
 ########################################################################################################################
+def load_instances(instances_filepath: str) -> Dict[MinSetCover,  float]:
+    """
+    Load instances from file.
+    :return: dict of MinSetCover, list of numpy.array; the generated instances and corresponding demands.
+    """
+    instances = dict()
+
+    for f in os.listdir(instances_filepath):
+        instance_id = f.split('-')[-1]
+        path = os.path.join(instances_filepath, f)
+
+        if os.path.isdir(path):
+            instance_path = os.path.join(path, 'instance.pkl')
+            optimal_cost_path = os.path.join(path, 'optimal-cost.pkl')
+            assert os.path.exists(instance_path), "instance.pkl not found"
+            assert os.path.exists(optimal_cost_path), "optimal-cost.pkl not found"
+
+            instance = load_msc(instance_path, int(instance_id))
+            cost = pickle.load(open(optimal_cost_path, 'rb'))
+            instances[instance] = cost
+
+    return instances
 
 
 class MinSetCoverEnv(gymnasium.Env):
@@ -319,90 +341,47 @@ class MinSetCoverEnv(gymnasium.Env):
     }
 
     def __init__(self,
-                 instances_filepath: str,
+                 data: Dict[MinSetCover, float],
                  num_prods: int,
                  num_sets: int,
                  seed: int,
-                 test_split: float = 0.3):
+                 is_test: bool = False,
+                 num_test_instances: int = 10):
 
         super(MinSetCoverEnv, self).__init__()
-        self._is_test = False
+        self._is_test = is_test
+        self._data = data
         self._num_prods = num_prods
         self._num_sets = num_sets
-        self._instances_filepath = instances_filepath
+        self._instances = np.array(data.keys())
         self._seed = seed
         np.random.seed(seed)
 
-        # Load instances from file
-        print('[MinSetCoverEnv] - Loading instances...')
-        self._data = self._load_instances()
-        print('[MinSetCoverEnv] - Finished')
-        instances = list(self._data.keys())
-        demands = [v[0] for v in self._data.values()]
-
         # Set the action and observation spaces required by Gym
         # TODO set high to np.inf when the bug is fixed
-        max_value = 100 * (int(np.array(demands).max()/100) + 1)
+        demands = [instance.demands for instance in self._instances]
+        max_value = 100 * (int(np.array(demands).max() / 100) + 1)
         self.action_space = Box(low=0, high=max_value, shape=(self._num_prods,), dtype=np.float32)
         self.observation_space = Box(low=0, high=np.inf, shape=(1,), dtype=np.float32)
 
-        split_file = os.path.join(self._instances_filepath, f'train_test_split_{seed}_{test_split}.pkl')
-        if os.path.exists(split_file):
-            split = pickle.load(open(split_file, 'rb'))
-            self._train_instances = []
-            self._test_instances = []
-            train_demands = []
-            for i in instances:
-                if i.instance_id in split['train']:
-                    self._train_instances.append(i)
-                    train_demands.append(i.demands)
-                else:
-                    self._test_instances.append(i)
-        else:
-            # Split between training and test sets
-            self._train_instances, self._test_instances, \
-                train_demands, test_demands = \
-                train_test_split(instances, demands, test_size=test_split, random_state=seed)
-            split = {'train': [inst.instance_id for inst in self._train_instances],
-                     'test': [inst.instance_id for inst in self._test_instances]}
-            pickle.dump(split, open(split_file, 'wb'))
-
         # Randomly select one of the instances
         super().reset(seed=seed)
-        self._current_instance = np.random.choice(self._train_instances)
-        self._chosen_test_instances = None
-        self._it_test_instances = None
+        if self._is_test:
+            self._chosen_test_instances = np.random.choice(self._instances, size=num_test_instances, replace=False)
+            self._it_test_instances = cycle(self._chosen_test_instances)
+            self._current_instance = next(self._it_test_instances)
+        else:
+            self._current_instance = np.random.choice(self._instances)
+            self._chosen_test_instances = None
+            self._it_test_instances = None
 
         # Standardize demands
         self._demands_scaler = StandardScaler()
-        self._demands_scaler.fit_transform(train_demands)
-
-    def _load_instances(self) -> Dict[MinSetCover, Tuple[np.ndarray, float]]:
-        """
-        Load instances from file.
-        :return: dict of MinSetCover, list of numpy.array; the generated instances and corresponding demands.
-        """
-        instances = dict()
-
-        for f in os.listdir(self._instances_filepath):
-            instance_id = f.split('-')[-1]
-            path = os.path.join(self._instances_filepath, f)
-
-            if os.path.isdir(path):
-                instance_path = os.path.join(path, 'instance.pkl')
-                optimal_cost_path = os.path.join(path, 'optimal-cost.pkl')
-                assert os.path.exists(instance_path), "instance.pkl not found"
-                assert os.path.exists(optimal_cost_path), "optimal-cost.pkl not found"
-
-                instance = load_msc(instance_path, int(instance_id))
-                cost = pickle.load(open(optimal_cost_path, 'rb'))
-                instances[instance] = (instance.demands, cost)
-
-        return instances
+        self._demands_scaler.fit_transform(demands)
 
     @property
     def optimal_cost(self):
-        return [self._data[self._current_instance][1]]
+        return [self._data[self._current_instance]]
 
     @property
     def current_instance(self):
@@ -420,24 +399,6 @@ class MinSetCoverEnv(gymnasium.Env):
     def demands_scaler(self):
         return self._demands_scaler
 
-    @property
-    def train_instances(self):
-        return self._train_instances
-
-    @property
-    def test_instances(self):
-        return self._test_instances
-
-    def set_as_test(self, num_test_instances: int = 10):
-        """
-        Set the env as test env and use the test_instances.
-        :return:
-        """
-        self._is_test = True
-        self._chosen_test_instances = np.random.choice(self._test_instances, size=num_test_instances, replace=False)
-        self._it_test_instances = cycle(self._chosen_test_instances)
-        self.reset(self._seed)
-
     def reset(self,
               seed: int | None = None,
               options: dict[str, Any] | None = None, ) -> tuple[np.array, dict[str, Any]]:
@@ -448,7 +409,7 @@ class MinSetCoverEnv(gymnasium.Env):
         if self._is_test:
             self._current_instance = next(self._it_test_instances)
         else:
-            self._current_instance = np.random.choice(self._train_instances)
+            self._current_instance = np.random.choice(self._instances)
         observables = self._current_instance.observables
 
         # FIXME: this is useless for ndarray
