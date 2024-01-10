@@ -42,7 +42,7 @@ def main(cfg: DictConfig):
         env_maker_function = env_maker(cfg.data.problem, cfg.data.params, device=device, seed=cfg.seed)
 
         garbage_env = env_maker_function()
-        env_state_dict = garbage_env.transform[0].state_dict()
+        env_state_dict = garbage_env.transform[0].state_dict() if cfg.data.params.obs_norm else None
         env_action_spec, env_obs_spec = garbage_env.action_spec, garbage_env.observation_spec
         policy_module, loss_module, other = prepare_networks_and_policy(**cfg.model,
                                                                         device=device,
