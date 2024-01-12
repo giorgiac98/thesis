@@ -197,7 +197,14 @@ def env_maker(problem: str,
                          'test': [inst.instance_id for inst in test_instances]}
                 pickle.dump(split, open(split_file, 'wb'))
 
-            instances = train_instances if env_type == 'train' else test_instances
+            instances = train_instances
+            half = len(test_instances)//2
+            if env_type == 'valid':
+                end = max(half, num_test_instances)
+                instances = test_instances[:end]
+            elif env_type == 'test':
+                end = max(half, num_test_instances)
+                instances = test_instances[end:]
             return MinSetCoverEnv(num_prods=params['num_prods'],
                                   num_sets=params['num_sets'],
                                   data={i: data[i] for i in instances},

@@ -353,10 +353,8 @@ class MinSetCoverEnv(gymnasium.Env):
         self._data = data
         self._num_prods = num_prods
         self._num_sets = num_sets
-        self._instances = np.array(data.keys())
+        self._instances = np.array(list(data.keys()))
         self._seed = seed
-        np.random.seed(seed)
-
         # Set the action and observation spaces required by Gym
         # TODO set high to np.inf when the bug is fixed
         demands = [instance.demands for instance in self._instances]
@@ -367,11 +365,11 @@ class MinSetCoverEnv(gymnasium.Env):
         # Randomly select one of the instances
         super().reset(seed=seed)
         if self._is_test:
-            self._chosen_test_instances = np.random.choice(self._instances, size=num_test_instances, replace=False)
+            self._chosen_test_instances = self._np_random.choice(self._instances, size=num_test_instances, replace=False)
             self._it_test_instances = cycle(self._chosen_test_instances)
             self._current_instance = next(self._it_test_instances)
         else:
-            self._current_instance = np.random.choice(self._instances)
+            self._current_instance = self._np_random.choice(self._instances)
             self._chosen_test_instances = None
             self._it_test_instances = None
 
@@ -409,7 +407,7 @@ class MinSetCoverEnv(gymnasium.Env):
         if self._is_test:
             self._current_instance = next(self._it_test_instances)
         else:
-            self._current_instance = np.random.choice(self._instances)
+            self._current_instance = self._np_random.choice(self._instances)
         observables = self._current_instance.observables
 
         # FIXME: this is useless for ndarray
