@@ -7,15 +7,15 @@ params:
   predictions_filepath: ${hydra:runtime.cwd}/envs/ems_data/Dataset10k.csv
   prices_filepath: ${hydra:runtime.cwd}/envs/ems_data/gmePrices.npy
   shifts_filepath: ${hydra:runtime.cwd}/envs/ems_data/optShift.npy
-  noise_std_dev: 0.01
+  noise_std_dev: 0.02
   method: sequential
   obs_norm: True
   instances:
     - 2732
-    - 120
-    - 1776
-    - 7141
-    - 3186
+#    - 120
+#    - 1776
+#    - 7141
+#    - 3186
   validation_instances:
     - 4828
     - 9702
