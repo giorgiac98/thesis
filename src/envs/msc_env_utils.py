@@ -404,6 +404,7 @@ class MinSetCoverEnv(gymnasium.Env):
         Reset the environment randomly selecting one of the instances.
         :return: numpy.array; the observations.
         """
+        super().reset(seed=seed)
         if self._is_test:
             self._current_instance = next(self._it_test_instances)
         else:
