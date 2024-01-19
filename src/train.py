@@ -36,7 +36,6 @@ def main(cfg: DictConfig):
                                  f'{cfg.data.params.num_instances} instances']
     logger = MyWandbLogger(**wandb_params) if cfg.wandb_log else None
     if logger:
-        logger.log_hparams(wandb_cfg)
         define_metrics(cfg, logger)
     env_maker_function = env_maker(cfg.data.problem, cfg.data.params, device=device, seed=cfg.seed)
 
