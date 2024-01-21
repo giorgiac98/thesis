@@ -409,7 +409,7 @@ def make_optimizer(cfg, loss_module):
                 {'params': list(loss_module.qvalue_network_params.flatten_keys().values()), 'lr': cfg.critic_lr},
                 {'params': [loss_module.log_alpha], 'lr': cfg.model.other_spec.alpha_lr}
             ]
-            lambdas.append(lambda _: 1.)
+            lambdas.append(lambda _: cfg.schedule_factor)
         optim = torch.optim.Adam(splitted)
         scheduler = torch.optim.lr_scheduler.MultiplicativeLR(optim, lr_lambda=lambdas) if cfg.schedule_lr else None
     else:
@@ -431,6 +431,8 @@ def training_loop(cfg, policy_module, loss_module, other_modules, optim, collect
             'best_optimality': -1, 'best_episodes': 0, 'best_updates': 0}
     pbar = tqdm(total=collector.total_frames)
     eval_str = ""
+    eval_intervals = np.linspace(0, cfg.total_frames, cfg.n_eval, dtype=int)
+    interval = 0
     if cfg.model.policy == 'ppo':
         advantage_module = other_modules['advantage']
         for i, tensordict_data in enumerate(collector):
@@ -445,10 +447,11 @@ def training_loop(cfg, policy_module, loss_module, other_modules, optim, collect
             if scheduler is not None:
                 scheduler.step()
 
-            eval_time = i % cfg.eval_interval == 0
+            eval_time = logs['collected_frames'] >= eval_intervals[interval]
             logs_str = train_logs(logger, logs, optim, pbar, tensordict_data, i,
                                   do_log_step=(not eval_time))
             if eval_time:
+                interval += 1
                 eval_str = evaluate_policy(cfg, logger, logs, policy_module, test_env, cfg.eval_rollouts)
             pbar.set_description(", ".join([eval_str, *logs_str]))
 
@@ -482,9 +485,12 @@ def training_loop(cfg, policy_module, loss_module, other_modules, optim, collect
                     for s in scheduler:
                         if s is not None:
                             s.step()
+
+            eval_time = logs['collected_frames'] >= eval_intervals[interval]
             logs_str = train_logs(logger, logs, optim, pbar, tensordict_data, i,
-                                  do_log_step=i % cfg.eval_interval != 0)
-            if i % cfg.eval_interval == 0:
+                                  do_log_step=eval_time)
+            if eval_time:
+                interval += 1
                 eval_str = evaluate_policy(cfg, logger, logs, policy_module, test_env, cfg.eval_rollouts)
             pbar.set_description(", ".join([eval_str, *logs_str]))
 

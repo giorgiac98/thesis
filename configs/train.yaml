@@ -1,6 +1,6 @@
 defaults:
   - _self_
-  - data: msc.yaml
+  - data: ems.yaml
   - model: sac.yaml
 
 device:
@@ -8,20 +8,20 @@ device:
   device: cpu
 
 wandb_log: True
-frames_per_batch: 120
-num_envs: 4
+frames_per_batch: 16
+num_envs: 8
 update_rounds: ${.frames_per_batch}
-batch_size: 32
+batch_size: 64
 buffer_size: 800000
-prb: False
-total_frames: 100000
-actor_lr: 0.0005
-critic_lr: 0.0005
+prb: True
+total_frames: 96000
+actor_lr: 0.001
+critic_lr: 0.001
 schedule_lr: False
 schedule_factor: 0.9998
 weight_decay: 0.1
 max_grad_norm: 0.5
-eval_interval: 3
+n_eval: 50
 eval_rollouts: 20
 eval_rollout_steps: 1000
 test_rollouts: 100
