@@ -439,11 +439,11 @@ def make_optimizer(cfg, loss_module):
 
 
 def get_opt_class(cfg):
-    if cfg.optimizer == 'adam':
+    if cfg.optim == 'adam':
         return torch.optim.Adam
-    if cfg.optimizer == 'radam':
+    if cfg.optim == 'radam':
         return torch.optim.RAdam
-    raise NotImplementedError(f"Optimizer {cfg.optimizer} not implemented")
+    raise NotImplementedError(f"Optimizer {cfg.optim} not implemented")
 
 
 def training_loop(cfg, policy_module, loss_module, other_modules, optim, collector, replay_buffer, device,
