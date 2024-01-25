@@ -198,7 +198,7 @@ def env_maker(problem: str,
                 pickle.dump(split, open(split_file, 'wb'))
 
             instances = train_instances
-            half = len(test_instances)//2
+            half = len(test_instances) // 2
             if env_type == 'valid':
                 end = max(half, num_test_instances)
                 instances = test_instances[:end]
@@ -344,6 +344,13 @@ def prepare_networks_and_policy(policy, policy_spec, other_spec, actor_net_spec,
                   depth=actor_net_spec.depth,
                   num_cells=actor_net_spec.num_cells,
                   activation_class=get_activation(other_spec.activation))
+        # Initialize policy weights
+        for layer in net.modules():
+            if isinstance(layer, torch.nn.Linear):
+                # orthogonal_(layer.weight, 0.1)
+                # uniform_(layer.weight, -3e-3, 3e-3)
+                torch.nn.init.kaiming_uniform_(layer.weight, )
+                layer.bias.data.zero_()
         module = SafeModule(net, in_keys=["observation"], out_keys=["param"])
         min_ = problem_spec.low if 'low' in problem_spec else env_action_spec.space.minimum
         max_ = problem_spec.high if 'high' in problem_spec else env_action_spec.space.maximum
@@ -369,6 +376,11 @@ def prepare_networks_and_policy(policy, policy_spec, other_spec, actor_net_spec,
                                    act_spec=n_action,
                                    device=device,
                                    net_spec=value_net_spec)
+        # Initialize value weights
+        for layer in q_value_net.mlp.modules():
+            if isinstance(layer, torch.nn.Linear):
+                torch.nn.init.orthogonal_(layer.weight, 0.01)
+                layer.bias.data.zero_()
         qvalue = ValueOperator(module=q_value_net, in_keys=['observation', 'action'])
         actor_model_explore = AdditiveGaussianWrapper(
             policy_module,
@@ -410,18 +422,28 @@ def make_optimizer(cfg, loss_module):
                 {'params': [loss_module.log_alpha], 'lr': cfg.model.other_spec.alpha_lr}
             ]
             lambdas.append(lambda _: cfg.schedule_factor)
-        optim = torch.optim.Adam(splitted)
+        opt_class = get_opt_class(cfg)
+        optim = opt_class(splitted)
         scheduler = torch.optim.lr_scheduler.MultiplicativeLR(optim, lr_lambda=lambdas) if cfg.schedule_lr else None
-    else:
+    else:  # TD3
         actor_params = list(loss_module.actor_network_params.flatten_keys().values())
         critic_params = list(loss_module.qvalue_network_params.flatten_keys().values())
-        optimizer_actor = torch.optim.Adam(actor_params, lr=cfg.actor_lr, weight_decay=cfg.weight_decay)
-        optimizer_critic = torch.optim.Adam(critic_params, lr=cfg.critic_lr)
+        opt_class = get_opt_class(cfg)
+        optimizer_actor = opt_class(actor_params, lr=cfg.actor_lr, weight_decay=cfg.weight_decay)
+        optimizer_critic = opt_class(critic_params, lr=cfg.critic_lr)
         optim = (optimizer_actor, optimizer_critic)
         scheduler = [torch.optim.lr_scheduler.MultiplicativeLR(op, lr_lambda=lambda _: cfg.schedule_factor)
                      if cfg.schedule_lr else None
                      for op in optim]
     return optim, scheduler
+
+
+def get_opt_class(cfg):
+    if cfg.optimizer == 'adam':
+        return torch.optim.Adam
+    if cfg.optimizer == 'radam':
+        return torch.optim.RAdam
+    raise NotImplementedError(f"Optimizer {cfg.optimizer} not implemented")
 
 
 def training_loop(cfg, policy_module, loss_module, other_modules, optim, collector, replay_buffer, device,
