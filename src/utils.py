@@ -344,13 +344,6 @@ def prepare_networks_and_policy(policy, policy_spec, other_spec, actor_net_spec,
                   depth=actor_net_spec.depth,
                   num_cells=actor_net_spec.num_cells,
                   activation_class=get_activation(other_spec.activation))
-        # Initialize policy weights
-        for layer in net.modules():
-            if isinstance(layer, torch.nn.Linear):
-                # orthogonal_(layer.weight, 0.1)
-                # uniform_(layer.weight, -3e-3, 3e-3)
-                torch.nn.init.kaiming_uniform_(layer.weight, )
-                layer.bias.data.zero_()
         module = SafeModule(net, in_keys=["observation"], out_keys=["param"])
         min_ = problem_spec.low if 'low' in problem_spec else env_action_spec.space.minimum
         max_ = problem_spec.high if 'high' in problem_spec else env_action_spec.space.maximum
@@ -376,11 +369,6 @@ def prepare_networks_and_policy(policy, policy_spec, other_spec, actor_net_spec,
                                    act_spec=n_action,
                                    device=device,
                                    net_spec=value_net_spec)
-        # Initialize value weights
-        for layer in q_value_net.mlp.modules():
-            if isinstance(layer, torch.nn.Linear):
-                torch.nn.init.orthogonal_(layer.weight, 0.01)
-                layer.bias.data.zero_()
         qvalue = ValueOperator(module=q_value_net, in_keys=['observation', 'action'])
         actor_model_explore = AdditiveGaussianWrapper(
             policy_module,
