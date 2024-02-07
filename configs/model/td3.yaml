@@ -6,7 +6,7 @@ policy_spec:
   noise_clip: 0.5
   delay_actor: True
   delay_qvalue: True
-  loss_function: l2
+  loss_function: smooth_l1
 actor_net_spec:
   depth: 2
   num_cells: 8

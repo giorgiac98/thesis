@@ -7,10 +7,10 @@ policy_spec:
   loss_critic_type: smooth_l1
 actor_net_spec:
   depth: 2
-  num_cells: 16
+  num_cells: 8
 value_net_spec:
   depth: 2
-  num_cells: 64
+  num_cells: 32
 other_spec:
   activation: relu
   gae_spec:

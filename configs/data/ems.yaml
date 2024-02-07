@@ -12,10 +12,10 @@ params:
   obs_norm: True
   instances:
     - 2732
-#    - 120
-#    - 1776
-#    - 7141
-#    - 3186
+    - 120
+    - 1776
+    - 7141
+    - 3186
   validation_instances:
     - 4828
     - 9702

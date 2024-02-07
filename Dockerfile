@@ -5,7 +5,7 @@ RUN git clone https://github.com/giorgiac98/thesis.git
 
 WORKDIR /thesis
 
-RUN pip3 install torch --index-url https://download.pytorch.org/whl/cpu && pip3 install -r requirements.txt
+RUN pip3 install torch==2.1.0 --index-url https://download.pytorch.org/whl/cpu && pip3 install -r requirements.txt
 
 WORKDIR /thesis/src
 RUN printf "wandb login\nwandb agent \$1\n" > run.sh

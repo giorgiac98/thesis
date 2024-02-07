@@ -176,7 +176,7 @@ def env_maker(problem: str,
             spec.append(UnboundedContinuousTensorSpec(shape=torch.Size([params['num_prods']]), dtype=torch.float32))
 
             data = load_instances(params['data_path'])
-            split_file = os.path.join(params['data_path'], f'train_test_split_{seed}_{test_split}.pkl')
+            split_file = os.path.join(params['data_path'], f'train_test_split_{test_split}.pkl')
             if os.path.exists(split_file):
                 split = pickle.load(open(split_file, 'rb'))
                 train_instances = []
