@@ -28,7 +28,8 @@ def main(cfg: DictConfig):
         if len_instances == 1:
             wandb_params['tags'] += [str(cfg.data.params.instances[0])]
         else:
-            wandb_params['tags'] += [', '.join(map(lambda x: str(x), cfg.data.params.instances))]
+            all_inst = ', '.join(map(lambda x: str(x), cfg.data.params.instances))
+            wandb_params['tags'] += [all_inst if len(all_inst) <= 64 else all_inst[:61] + '...']
         wandb_params['tags'] += [f'{len_instances} instance' + ('s' if len_instances > 1 else ''),
                                  cfg.data.params.method]
     else:
