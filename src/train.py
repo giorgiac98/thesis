@@ -59,8 +59,8 @@ def main(cfg: DictConfig):
                                        total_frames=cfg.total_frames,
                                        device=device)
     collector.set_seed(cfg.seed)
-    buffer_size = cfg.frames_per_batch if cfg.model.policy == 'ppo' else cfg.buffer_size
-    if cfg.prb and cfg.model.policy != 'ppo':
+    buffer_size = cfg.frames_per_batch if cfg.model.policy == 'ppo' or cfg.model.policy == 'a2c' else cfg.buffer_size
+    if cfg.prb and cfg.model.policy != 'ppo' and cfg.model.policy != 'a2c':
         sampler = PrioritizedSampler(buffer_size, alpha=0.7, beta=0.5)
     else:
         sampler = hydra.utils.instantiate(cfg.model.other_spec.sampler)
@@ -80,12 +80,12 @@ def main(cfg: DictConfig):
     test_env = env_maker_function(state_dict=env_state_dict, env_type='test', num_test_instances=cfg.test_rollouts)
     final_evaluation(cfg, logger, policy_module, test_env)
 
-    dir_name = get_dir_name(cfg, logger)
-    wandb_dir = dir_name[:-6] if 'files' in dir_name else dir_name
     if logger is not None:
+        dir_name = get_dir_name(cfg, logger)
+        wandb_dir = dir_name[:-6] if 'files' in dir_name else dir_name
         logger.experiment.finish()
-    print(f'Cleaning up {wandb_dir}')
-    shutil.rmtree(wandb_dir)
+        print(f'Cleaning up {wandb_dir}')
+        shutil.rmtree(wandb_dir)
 
 
 if __name__ == "__main__":

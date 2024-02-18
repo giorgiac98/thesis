@@ -1,0 +1,20 @@
+policy: a2c
+policy_spec:
+  critic_coef: 1.
+  entropy_coef: 0.0
+  entropy_bonus: False
+  loss_critic_type: l2
+actor_net_spec:
+  depth: 2
+  num_cells: 32
+value_net_spec:
+  depth: 2
+  num_cells: 32
+other_spec:
+  activation: tanh
+  gae_spec:
+    gamma: 0.99
+    lmbda: 1.
+    average_gae: True
+  sampler:
+    _target_: torchrl.data.replay_buffers.samplers.SamplerWithoutReplacement

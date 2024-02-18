@@ -13,7 +13,7 @@ from torchrl.envs import TransformedEnv, Compose, ObservationNorm, StepCounter, 
 from torchrl.envs.libs.gym import GymWrapper
 from torchrl.modules import MLP, ProbabilisticActor, TanhNormal, IndependentNormal, ValueOperator, NormalParamWrapper, \
     SafeModule, AdditiveGaussianWrapper, TanhModule, SafeSequential
-from torchrl.objectives import ClipPPOLoss, SACLoss, SoftUpdate, TD3Loss
+from torchrl.objectives import ClipPPOLoss, SACLoss, SoftUpdate, TD3Loss, ReinforceLoss, A2CLoss
 from torchrl.objectives.value import GAE
 from torchrl.record.loggers.wandb import WandbLogger
 from tqdm import tqdm
@@ -72,6 +72,8 @@ def define_metrics(cfg, logger):
         'ems': [],
     }
     am = {
+        'a2c': ['train/loss_objective', 'train/loss_critics', 'train/loss_entropy',
+                'debug/entropy'],
         'ppo': ['train/loss_objective', 'train/loss_critics', 'train/loss_entropy',
                 'debug/ESS', 'debug/entropy'],
         'sac': ['train/loss_actor', 'train/loss_qvalue', 'train/loss_alpha',
@@ -243,7 +245,51 @@ def env_maker(problem: str,
 def prepare_networks_and_policy(policy, policy_spec, other_spec, actor_net_spec, value_net_spec,
                                 device, problem_spec, env_action_spec, input_shape):
     n_action = env_action_spec.shape[-1]
-    if policy == 'ppo':
+    if policy == 'a2c':
+        actor_net = MLP(in_features=input_shape,
+                        out_features=n_action,  # outputs only loc
+                        device=device,
+                        depth=actor_net_spec.depth,
+                        num_cells=actor_net_spec.num_cells,
+                        activation_class=get_activation(other_spec.activation))
+        # Initialize policy weights
+        for layer in actor_net.modules():
+            if isinstance(layer, torch.nn.Linear):
+                torch.nn.init.xavier_uniform_(layer.weight)
+                layer.bias.data.zero_()
+        # Add state-independent normal scale
+        actor_net = torch.nn.Sequential(
+            actor_net,
+            AddStateIndependentNormalScale(n_action, scale_lb=1e-6),
+        )
+        module = TensorDictModule(actor_net, in_keys=["observation"], out_keys=["loc", "scale"])
+        policy_module = ProbabilisticActor(module=module,
+                                           in_keys=["loc", "scale"],
+                                           spec=env_action_spec,
+                                           return_log_prob=True,
+                                           distribution_class=IndependentNormal,
+                                           default_interaction_type=InteractionType.RANDOM)
+        value_net = MLP(in_features=input_shape,
+                        out_features=1,
+                        device=device,
+                        depth=value_net_spec.depth,
+                        num_cells=value_net_spec.num_cells,
+                        activation_class=get_activation(other_spec.activation))
+        # Initialize value weights
+        for layer in value_net.modules():
+            if isinstance(layer, torch.nn.Linear):
+                torch.nn.init.xavier_uniform_(layer.weight)
+                layer.bias.data.zero_()
+        value_module = ValueOperator(
+            module=value_net,
+            in_keys=["observation"],
+        )
+        advantage_module = GAE(value_network=value_module, **other_spec.gae_spec)
+        loss_module = A2CLoss(policy_module,
+                              value_module,
+                              **policy_spec)
+        other = {'value': value_module, 'advantage': advantage_module}
+    elif policy == 'ppo':
         actor_net = MLP(in_features=input_shape,
                         out_features=n_action,  # outputs only loc
                         device=device,
@@ -398,7 +444,7 @@ def prepare_networks_and_policy(policy, policy_spec, other_spec, actor_net_spec,
 def make_optimizer(cfg, loss_module):
     if cfg.model.policy != 'td3':
         lambdas = [lambda _: cfg.schedule_factor] * 2
-        if cfg.model.policy == 'ppo':
+        if cfg.model.policy == 'ppo' or cfg.model.policy == 'a2c':
             splitted = [
                 {'params': [p for k, p in loss_module.named_parameters() if 'actor' in k], 'lr': cfg.actor_lr},
                 {'params': [p for k, p in loss_module.named_parameters() if 'critic' in k], 'lr': cfg.critic_lr},
@@ -443,7 +489,8 @@ def training_loop(cfg, policy_module, loss_module, other_modules, optim, collect
     eval_str = ""
     eval_intervals = np.linspace(0, cfg.total_frames, cfg.n_eval, dtype=int)
     interval = 0
-    if cfg.model.policy == 'ppo':
+    if cfg.model.policy == 'ppo' or cfg.model.policy == 'a2c':
+        # perform on-policy training loop
         advantage_module = other_modules['advantage']
         for i, tensordict_data in enumerate(collector):
             logs['collected_frames'] += tensordict_data.numel()
@@ -464,8 +511,10 @@ def training_loop(cfg, policy_module, loss_module, other_modules, optim, collect
                 interval += 1
                 eval_str = evaluate_policy(cfg, logger, logs, policy_module, test_env, cfg.eval_rollouts)
             pbar.set_description(", ".join([eval_str, *logs_str]))
+            collector.update_policy_weights_()
 
     else:
+        # perform off-policy training loop
         target_net_updater = other_modules['target_net_updater']
         for i, tensordict_data in enumerate(collector):
             logs['collected_frames'] += tensordict_data.numel()
