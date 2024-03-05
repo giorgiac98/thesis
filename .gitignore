@@ -1,3 +1,5 @@
 .idea/
 outputs/
 wandb/
+results/sweep_hp_tuning/
+results/final/
