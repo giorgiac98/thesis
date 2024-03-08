@@ -93,9 +93,14 @@ def load_data(save_path: str,
             print(f'Downloading data from wandb (Sweep ID: {sweep_ids})')
             raw_data = ex.map(map_f, runs)
         df = pd.DataFrame(list(raw_data))
+        if 'final_eval_stats/regret' in df.columns:
+            df['final_eval_stats/regret'] = -df['final_eval_stats/regret']
         df.to_csv(f'{save_path}/data.csv', index=False)
         print('Data saved to', f'{save_path}/data.csv')
     else:
         print(f'Loading data from {save_path}/data.csv')
         df = pd.read_csv(f'{save_path}/data.csv')
+    tf_map = {20000: '20K', 40000: '40K', 60000: '60K', 1000000: '1M', 37000: '37K',
+              480000: '480K', 288000: '288K', 182400: '182K', 96000: '96K'}
+    df['total_frames'] = df['total_frames'].apply(lambda x: tf_map[x])
     return df
